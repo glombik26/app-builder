@@ -21,15 +21,19 @@ A platform-owned unit of work on a Project that follows the guided workflow and 
 _Avoid_: ticket, branch, PR, change (as the name of this unit)
 
 **Guided Workflow**:
-The fixed sequence of stages for a Feature: grill-with-docs → to-spec → to-tickets → implement.
+The fixed sequence of stages for a Feature: grill-with-docs → to-spec → to-tickets → implement. Handoffs live in the Feature worktree (`.scratch/`), not as issues on the Project.
 _Avoid_: pipeline, CI, process
 
 **Stage**:
-One step of the Guided Workflow. The four Stages are grill-with-docs, to-spec, to-tickets, and implement.
+One step of the Guided Workflow. The four Stages are grill-with-docs, to-spec, to-tickets, and implement. The Operator closes a Stage; the Harness may propose done, the Platform never advances on its own. A closed Stage can be reopened until the next Stage starts; after that it is locked. The only way back past a started later Stage is aborting the Feature. implement is a shell: it contains Tickets, it is not itself one Ticket session.
 _Avoid_: step, phase, job
 
+**Ticket**:
+A vertical slice of a Feature, produced by to-tickets and stored in the Feature worktree. Distinct from the Feature and from a Stage.
+_Avoid_: slice, work item, issue (as the name of this unit)
+
 **Harness**:
-The grok-build process the Platform wraps to drive a Feature's Guided Workflow.
+The grok-build process the Platform wraps to drive a Feature's Guided Workflow. grill-with-docs and to-spec share one Harness session; to-tickets has its own; implement has one session per Ticket.
 _Avoid_: agent, LLM, chatbot (as the name of this process)
 
 **Preview**:
