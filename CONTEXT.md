@@ -17,7 +17,7 @@ A GitHub repository identified by its GitHub `owner/name`. The Platform has chec
 _Avoid_: app, repo (as a domain term), codebase
 
 **Feature**:
-A platform-owned unit of work on a Project that follows the guided workflow and owns a Preview while in development. A Git branch, worktree, or directory may carry it; none of those is the Feature.
+A platform-owned unit of work on a Project, identified by an operator-given name that is unique within that Project and does not change. It follows the guided workflow and owns a Preview while in development. A Git branch, worktree, or directory may carry it; none of those is the Feature.
 _Avoid_: ticket, branch, PR, change (as the name of this unit)
 
 **Guided Workflow**:
@@ -29,7 +29,7 @@ One step of the Guided Workflow. The four Stages are grill-with-docs, to-spec, t
 _Avoid_: step, phase, job
 
 **Ticket**:
-A vertical slice of a Feature, produced by to-tickets and stored in the Feature worktree. Distinct from the Feature and from a Stage.
+A vertical slice of a Feature, produced by to-tickets and stored in the Feature worktree. Distinct from the Feature and from a Stage. Closed-in-implement is a fact the Platform holds about the Ticket, not something the file records.
 _Avoid_: slice, work item, issue (as the name of this unit)
 
 **Harness**:
