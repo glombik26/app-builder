@@ -33,8 +33,16 @@ A vertical slice of a Feature, produced by to-tickets and stored in the Feature 
 _Avoid_: slice, work item, issue (as the name of this unit)
 
 **Harness**:
-The grok-build process the Platform wraps to drive a Feature's Guided Workflow. grill-with-docs and to-spec share one Harness session; to-tickets has its own; implement has one session per Ticket.
+The grok-build process the Platform wraps to drive a Feature's Guided Workflow. The Platform is the only client; the Operator-facing UI does not speak to grok-build. grill-with-docs and to-spec share one Harness session; to-tickets has its own; implement has one session per Ticket.
 _Avoid_: agent, LLM, chatbot (as the name of this process)
+
+**Slot**:
+A Feature's pointer to one Harness conversation: grill-with-docs and to-spec share one; to-tickets has one; each implement Ticket has one. The Feature record holds the last session identity per Slot.
+_Avoid_: session (as the name of this pointer — a session is the Harness conversation)
+
+**Turn**:
+One Operator prompt on a Slot until the Harness reports the turn has ended. The live Harness process exists only for that Turn.
+_Avoid_: request, call, message, exchange
 
 **Preview**:
 An isolated Docker stack with its own reachable URL for exactly one Feature on DEV.
