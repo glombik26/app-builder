@@ -17,7 +17,7 @@ A GitHub repository identified by its GitHub `owner/name`. The Platform has chec
 _Avoid_: app, repo (as a domain term), codebase
 
 **Feature**:
-A platform-owned unit of work on a Project, identified by an operator-given name that is unique within that Project and does not change. It follows the guided workflow and owns a Preview while in development. A Git branch, worktree, or directory may carry it; none of those is the Feature.
+A platform-owned unit of work on a Project, identified by an operator-given name that is unique within that Project and does not change. It follows the guided workflow and owns a Preview while in development. After Freigabe DEV→TEST the Preview, worktree, and Feature branch are gone; the record remains and the name stays taken. A Git branch, worktree, or directory may carry it; none of those is the Feature.
 _Avoid_: ticket, branch, PR, change (as the name of this unit)
 
 **Guided Workflow**:
@@ -49,13 +49,25 @@ An isolated Docker stack with its own reachable URL for exactly one Feature on D
 _Avoid_: staging, sandbox, environment (as a synonym for this stack)
 
 **Environment**:
-A long-lived deployment target. The three Environments are DEV, TEST, and PROD.
+A long-lived place a Project can run. The three Environments are DEV, TEST, and PROD.
 _Avoid_: stage, server, instance
 
+**DEV**:
+The Environment that holds Previews. It has no standing stack of the Project's default branch; without an open Feature, DEV is empty.
+_Avoid_: a third running copy of main
+
+**TEST**:
+The Environment that runs the Project's `main` branch as one standing stack, from the moment the Project exists and `main` can run. It is the integration stand: every Feature merged into `main` is on TEST together.
+_Avoid_: a single Feature candidate, staging-as-one-preview
+
+**PROD**:
+The Environment that runs the Project's long-lived `release` branch as one standing stack. One stack per Project. It exists from the first Freigabe TEST→PROD; that Freigabe creates `release` if needed.
+_Avoid_: a second TEST, blue/green as a second Environment
+
 **Freigabe**:
-The Operator's explicit yes that moves a Feature from DEV to TEST, or from TEST to a Release on PROD.
+The Operator's explicit yes at two gates. DEV→TEST is allowed only after implement is closed: the Platform merges the Feature into `main` (no PR) and deletes Preview, worktree, and Feature branch. TEST→PROD is allowed anytime: the Platform fast-forwards `release` to the `main` commit TEST is on, or fails if that is not a fast-forward; it promotes the whole integration stand, not one Feature. Each Environment follows its branch — a new commit on the ref rebuilds the stack.
 _Avoid_: approval, accept, merge, deploy (as the name of this decision)
 
 **Release**:
-The artifact that may be deployed to PROD after Freigabe on TEST.
+The commit PROD runs — the tip of the Project's `release` branch after Freigabe on TEST. A Git tag may label it; the tag is not the Release.
 _Avoid_: version, build, tag (as the name of this artifact)
