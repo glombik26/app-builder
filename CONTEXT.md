@@ -13,7 +13,7 @@ The single human who runs the Platform. There is exactly one.
 _Avoid_: user, admin, customer, team
 
 **Project**:
-A GitHub repository the Platform has checked out and can develop Features against.
+A GitHub repository identified by its GitHub `owner/name`. The Platform has checked it out as exactly one clone and can develop Features against it. Access to a private Project belongs to that Project, not to the Platform.
 _Avoid_: app, repo (as a domain term), codebase
 
 **Feature**:
