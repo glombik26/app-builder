@@ -17,7 +17,7 @@ A GitHub repository identified by its GitHub `owner/name`. The Platform has chec
 _Avoid_: app, repo (as a domain term), codebase
 
 **Feature**:
-A platform-owned unit of work on a Project, identified by an operator-given name that is unique within that Project and does not change. It follows the guided workflow and owns a Preview while in development if the worktree can run. After Freigabe DEV→TEST the Preview, worktree, and Feature branch are gone; the record remains and the name stays taken. A Git branch, worktree, or directory may carry it; none of those is the Feature.
+A platform-owned unit of work on a Project, identified by an operator-given name that is unique within that Project and does not change. It follows the guided workflow and owns a Preview while in development if the worktree can run. After Freigabe DEV→TEST the Preview, worktree, and Feature branch are gone; the record remains and the name stays taken. After abort the record is gone and the name is free. A Git branch, worktree, or directory may carry it; none of those is the Feature.
 _Avoid_: ticket, branch, PR, change (as the name of this unit)
 
 **Guided Workflow**:
@@ -45,7 +45,7 @@ One Operator prompt on a Slot until the Harness reports the turn has ended. The 
 _Avoid_: request, call, message, exchange
 
 **Preview**:
-An isolated Docker stack with its own reachable URL for exactly one Feature on DEV. A Feature owns one only while its worktree can run; without a runnable stack there is no Preview.
+An isolated Docker stack for exactly one Feature on DEV. Each public HTTP service of that stack has its own reachable URL. A Feature owns a Preview only while its worktree can run; without a runnable stack there is no Preview.
 _Avoid_: staging, sandbox, environment (as a synonym for this stack)
 
 **Environment**:
