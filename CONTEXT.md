@@ -17,7 +17,7 @@ A GitHub repository identified by its GitHub `owner/name`. The Platform has chec
 _Avoid_: app, repo (as a domain term), codebase
 
 **Feature**:
-A platform-owned unit of work on a Project, identified by an operator-given name that is unique within that Project and does not change. It follows the guided workflow and owns a Preview while in development if the worktree can run. After Freigabe DEV→TEST the Preview, worktree, and Feature branch are gone; the record remains and the name stays taken. After abort the record is gone and the name is free. A Git branch, worktree, or directory may carry it; none of those is the Feature.
+A platform-owned unit of work on a Project, identified by an operator-given name that is unique within that Project and does not change. It follows the guided workflow and owns a Preview while in development if the worktree can run. Until Freigabe DEV→TEST the Feature branch exists only on the VPS. After that Freigabe the Preview, worktree, and Feature branch are gone; the record remains and the name stays taken. After abort the record is gone and the name is free. A Git branch, worktree, or directory may carry it; none of those is the Feature.
 _Avoid_: ticket, branch, PR, change (as the name of this unit)
 
 **Guided Workflow**:
@@ -25,11 +25,11 @@ The fixed sequence of stages for a Feature: grill-with-docs → to-spec → to-t
 _Avoid_: pipeline, CI, process
 
 **Stage**:
-One step of the Guided Workflow. The four Stages are grill-with-docs, to-spec, to-tickets, and implement. The Operator closes a Stage; the Harness may propose done, the Platform never advances on its own. A closed Stage can be reopened until the next Stage starts; after that it is locked. The only way back past a started later Stage is aborting the Feature. implement is a shell: it contains Tickets, it is not itself one Ticket session.
+One step of the Guided Workflow. The four Stages are grill-with-docs, to-spec, to-tickets, and implement. The Operator closes a Stage; the Harness may propose done, the Platform never advances on its own. A closed Stage can be reopened until the next Stage starts; after that it is locked. The only way back past a started later Stage is aborting the Feature. implement is a shell: it contains Tickets, it is not itself one Ticket session, and it can close only when the Feature worktree is clean.
 _Avoid_: step, phase, job
 
 **Ticket**:
-A vertical slice of a Feature, produced by to-tickets and stored in the Feature worktree. Distinct from the Feature and from a Stage. Closed-in-implement is a fact the Platform holds about the Ticket, not something the file records.
+A vertical slice of a Feature, produced by to-tickets and stored in the Feature worktree. Distinct from the Feature and from a Stage. Closed-in-implement is a fact the Platform holds about the Ticket, not something the file records. A commit that may appear on the Feature branch when the Ticket closes is a snapshot of the worktree, not that closed-fact.
 _Avoid_: slice, work item, issue (as the name of this unit)
 
 **Harness**:
