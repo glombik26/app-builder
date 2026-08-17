@@ -6,7 +6,7 @@ The Platform: a single-Operator control plane for developing software through a 
 
 **Platform**:
 This repo (`app-builder`). The control plane the Operator uses to create Projects, run the guided workflow, and promote Features.
-_Avoid_: app, product, system, tenant
+_Avoid_: app, product, system, tenant; the predecessor stack also branded App-Builder
 
 **Operator**:
 The single human who runs the Platform. There is exactly one.
