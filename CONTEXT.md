@@ -49,11 +49,15 @@ An isolated Docker stack for exactly one Feature on DEV. Each public HTTP servic
 _Avoid_: staging, sandbox, environment (as a synonym for this stack)
 
 **Environment**:
-A long-lived place a Project can run. The three Environments are DEV, TEST, and PROD.
+A long-lived place a Project can run. The three Environments are DEV, TEST, and PROD. TEST and PROD each follow one Tracking Ref.
 _Avoid_: stage, server, instance
 
+**Tracking Ref**:
+The Git branch an Environment follows: `main` for TEST, `release` for PROD. Movement is a different SHA after fetch, including force-push and rewind; a missing ref is a visible break, not a stand to keep.
+_Avoid_: deploy ref, motor, tag (as the thing followed)
+
 **DEV**:
-The Environment that holds Previews. It has no standing stack of the Project's default branch; without an open Feature, DEV is empty.
+The Environment that holds Previews. It has no standing stack of the Project's default branch and no Tracking Ref; without an open Feature, DEV is empty.
 _Avoid_: a third running copy of main
 
 **TEST**:
@@ -65,7 +69,7 @@ The Environment that runs the Project's long-lived `release` branch as one stand
 _Avoid_: a second TEST, blue/green as a second Environment
 
 **Freigabe**:
-The Operator's explicit yes at two gates. DEV→TEST is allowed only after implement is closed: the Platform merges the Feature into `main` (no PR) and deletes Preview, worktree, and Feature branch. TEST→PROD is allowed anytime: the Platform fast-forwards `release` to the `main` commit TEST is on, or fails if that is not a fast-forward; it promotes the whole integration stand, not one Feature. Each Environment follows its branch — a new commit on the ref rebuilds the stack.
+The Operator's explicit yes at two gates. DEV→TEST is allowed only after implement is closed: the Platform merges the Feature into `main` (no PR) and deletes Preview, worktree, and Feature branch. TEST→PROD is allowed anytime: the Platform fast-forwards `release` to the `main` commit TEST is on, or fails if that is not a fast-forward; it promotes the whole integration stand, not one Feature. TEST and PROD follow their Tracking Ref — a new SHA rebuilds the stack; a failed rebuild leaves the last good stand and is a visible break.
 _Avoid_: approval, accept, merge, deploy (as the name of this decision)
 
 **Release**:
