@@ -61,12 +61,16 @@ The Environment that holds Previews. It has no standing stack of the Project's d
 _Avoid_: a third running copy of main
 
 **TEST**:
-The Environment that runs the Project's `main` branch as one standing stack, from the moment the Project exists and `main` can run. It is the integration stand: every Feature merged into `main` is on TEST together.
+The Environment that runs the Project's `main` branch as one standing stack, from the moment the Project exists and `main` can run. It is the integration stand: every Feature merged into `main` is on TEST together. It has its own Platform-owned worktree, not a Feature's.
 _Avoid_: a single Feature candidate, staging-as-one-preview
 
 **PROD**:
-The Environment that runs the Project's long-lived `release` branch as one standing stack. One stack per Project. It exists from the first Freigabe TEST→PROD; that Freigabe creates `release` if needed.
+The Environment that runs the Project's long-lived `release` branch as one standing stack. One stack per Project. It exists from the first Freigabe TEST→PROD; that Freigabe creates `release` if needed. It has its own Platform-owned worktree, not a Feature's.
 _Avoid_: a second TEST, blue/green as a second Environment
+
+**Apply**:
+The Platform putting TEST or PROD onto a Tracking Ref SHA: the compose contract at the bare clone, then that Environment's worktree onto the SHA, then the Compose project in line. Poll, Freigabe, „jetzt ziehen“, and reboot are the same act.
+_Avoid_: deploy, sync, pull, update (as the name of this act)
 
 **Freigabe**:
 The Operator's explicit yes at two gates. DEV→TEST is allowed only after implement is closed: the Platform merges the Feature into `main` (no PR) and deletes Preview, worktree, and Feature branch. TEST→PROD is allowed anytime: the Platform fast-forwards `release` to the `main` commit TEST is on, or fails if that is not a fast-forward; it promotes the whole integration stand, not one Feature. TEST and PROD follow their Tracking Ref — a new SHA rebuilds the stack; a failed rebuild leaves the last good stand and is a visible break.
