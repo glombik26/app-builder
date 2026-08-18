@@ -45,7 +45,7 @@ One Operator prompt on a Slot until the Harness reports the turn has ended. The 
 _Avoid_: request, call, message, exchange
 
 **Preview**:
-An isolated Docker stack for exactly one Feature on DEV. Each public HTTP service of that stack has its own reachable URL. A Feature owns a Preview only while that stack is up; the Operator can take it down without ending the Feature, so a runnable worktree may still have no Preview.
+An isolated Docker stack for exactly one Feature on DEV. Each public HTTP service of that stack has its own reachable URL. A Feature owns a Preview only while that stack is up; the Operator can take it down or rebuild it onto the current worktree without ending the Feature. A broken contract does not take it down, so a runnable worktree may have no Preview, and a running Preview may no longer meet the contract.
 _Avoid_: staging, sandbox, environment (as a synonym for this stack)
 
 **Environment**:
