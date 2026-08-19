@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+control-plane/.env
+control-plane/auth/htpasswd
+control-plane/traefik/acme.json

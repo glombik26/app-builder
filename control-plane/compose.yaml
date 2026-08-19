@@ -1,0 +1,58 @@
+name: ab-platform
+
+networks:
+  proxy:
+    name: proxy
+
+services:
+  traefik:
+    image: traefik:v3.3
+    restart: unless-stopped
+    command:
+      - --api.dashboard=false
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=proxy
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.ionos.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.ionos.acme.storage=/acme.json
+      - --certificatesresolvers.ionos.acme.dnschallenge=true
+      - --certificatesresolvers.ionos.acme.dnschallenge.provider=ionos
+    environment:
+      IONOS_API_KEY: ${IONOS_API_KEY}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/acme.json:/acme.json
+      - ./auth/htpasswd:/auth/htpasswd:ro
+    networks:
+      - proxy
+
+  platform:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PLATFORM_HOME: /var/lib/app-builder
+      PLATFORM_HOST: 0.0.0.0
+      PLATFORM_PORT: "3847"
+    volumes:
+      - /var/lib/app-builder:/var/lib/app-builder
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.platform.rule=Host(`platform.glombik26.de`)
+      - traefik.http.routers.platform.entrypoints=websecure
+      - traefik.http.routers.platform.tls=true
+      - traefik.http.routers.platform.tls.certresolver=ionos
+      - traefik.http.routers.platform.tls.domains[0].main=platform.glombik26.de
+      - traefik.http.routers.platform.middlewares=platform-auth
+      - traefik.http.middlewares.platform-auth.basicauth.usersfile=/auth/htpasswd
+      - traefik.http.services.platform.loadbalancer.server.port=3847
