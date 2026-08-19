@@ -1,15 +1,25 @@
 import type { Project } from "./platform.ts";
 
-export function renderHomePage(projects: Project[]): string {
+export type HomePageView = {
+  projects: Project[];
+  error?: string;
+  url?: string;
+};
+
+export function renderHomePage(view: HomePageView): string {
   const body =
-    projects.length === 0
+    view.projects.length === 0
       ? `<p class="empty">No Projects.</p>`
-      : `<ul class="projects">${projects
+      : `<ul class="projects">${view.projects
           .map(
             (project) =>
               `<li><span class="identity">${escapeHtml(project.owner)}/${escapeHtml(project.name)}</span></li>`,
           )
           .join("")}</ul>`;
+
+  const error = view.error
+    ? `<p class="error" role="alert">${escapeHtml(view.error)}</p>`
+    : "";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -24,6 +34,7 @@ export function renderHomePage(projects: Project[]): string {
       --rule: #7c8694;
       --mark: #0b5f6b;
       --quiet: #4a5360;
+      --alert: #8b2e2e;
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; }
@@ -77,6 +88,49 @@ export function renderHomePage(projects: Project[]): string {
       background: var(--mark);
       vertical-align: 0.05rem;
     }
+    .add-project {
+      margin-top: 2.4rem;
+      padding-top: 1.4rem;
+      border-top: 2px solid var(--ink);
+    }
+    .add-project label {
+      display: block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+    .add-project input {
+      display: block;
+      width: 100%;
+      margin: 0.55rem 0 0.9rem;
+      padding: 0.55rem 0.15rem;
+      border: 0;
+      border-bottom: 1px solid var(--ink);
+      background: transparent;
+      color: var(--ink);
+      font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
+      font-size: 1rem;
+    }
+    .add-project input:focus {
+      outline: none;
+      border-bottom-width: 2px;
+    }
+    .add-project button {
+      border: 2px solid var(--ink);
+      background: var(--ink);
+      color: var(--field);
+      padding: 0.4rem 0.9rem;
+      font: inherit;
+      font-size: 0.85rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .error {
+      margin: 1.1rem 0 0;
+      color: var(--alert);
+    }
   </style>
 </head>
 <body>
@@ -85,6 +139,12 @@ export function renderHomePage(projects: Project[]): string {
       <h1><span class="mark" aria-hidden="true"></span>Projects</h1>
     </header>
     ${body}
+    <form class="add-project" method="post" action="/projects">
+      <label for="url">GitHub URL</label>
+      <input id="url" name="url" type="text" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/name" value="${escapeHtml(view.url ?? "")}">
+      <button type="submit">Add Project</button>
+      ${error}
+    </form>
   </main>
 </body>
 </html>
