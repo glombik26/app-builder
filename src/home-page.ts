@@ -11,10 +11,19 @@ export function renderHomePage(view: HomePageView): string {
     view.projects.length === 0
       ? `<p class="empty">No Projects.</p>`
       : `<ul class="projects">${view.projects
-          .map(
-            (project) =>
-              `<li><span class="identity">${escapeHtml(project.owner)}/${escapeHtml(project.name)}</span></li>`,
-          )
+          .map((project) => {
+            const identity = `${escapeHtml(project.owner)}/${escapeHtml(project.name)}`;
+            const action = `/projects/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/pat`;
+            const fieldId = `pat-${encodeURIComponent(project.owner)}-${encodeURIComponent(project.name)}`;
+            return `<li>
+              <span class="identity">${identity}</span>
+              <form class="rotate-pat" method="post" action="${escapeHtml(action)}">
+                <label for="${escapeHtml(fieldId)}">Replace PAT</label>
+                <input id="${escapeHtml(fieldId)}" name="pat" type="password" autocomplete="off" spellcheck="false" placeholder="Fine-grained PAT">
+                <button type="submit">Replace PAT</button>
+              </form>
+            </li>`;
+          })
           .join("")}</ul>`;
 
   const error = view.error
@@ -74,7 +83,7 @@ export function renderHomePage(view: HomePageView): string {
     }
     .projects li {
       border-bottom: 1px solid var(--rule);
-      padding: 0.7rem 0;
+      padding: 0.9rem 0 1.1rem;
     }
     .identity {
       font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
@@ -93,14 +102,16 @@ export function renderHomePage(view: HomePageView): string {
       padding-top: 1.4rem;
       border-top: 2px solid var(--ink);
     }
-    .add-project label {
+    .add-project label,
+    .rotate-pat label {
       display: block;
       font-size: 0.72rem;
       font-weight: 700;
       letter-spacing: 0.16em;
       text-transform: uppercase;
     }
-    .add-project input {
+    .add-project input,
+    .rotate-pat input {
       display: block;
       width: 100%;
       margin: 0.55rem 0 0.9rem;
@@ -112,11 +123,13 @@ export function renderHomePage(view: HomePageView): string {
       font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
       font-size: 1rem;
     }
-    .add-project input:focus {
+    .add-project input:focus,
+    .rotate-pat input:focus {
       outline: none;
       border-bottom-width: 2px;
     }
-    .add-project button {
+    .add-project button,
+    .rotate-pat button {
       border: 2px solid var(--ink);
       background: var(--ink);
       color: var(--field);
@@ -126,6 +139,13 @@ export function renderHomePage(view: HomePageView): string {
       letter-spacing: 0.08em;
       text-transform: uppercase;
       cursor: pointer;
+    }
+    .rotate-pat {
+      margin-top: 0.7rem;
+    }
+    .rotate-pat input {
+      margin: 0.45rem 0 0.7rem;
+      padding: 0.45rem 0.15rem;
     }
     .error {
       margin: 1.1rem 0 0;
@@ -138,12 +158,14 @@ export function renderHomePage(view: HomePageView): string {
     <header>
       <h1><span class="mark" aria-hidden="true"></span>Projects</h1>
     </header>
+    ${error}
     ${body}
     <form class="add-project" method="post" action="/projects">
       <label for="url">GitHub URL</label>
       <input id="url" name="url" type="text" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/name" value="${escapeHtml(view.url ?? "")}">
+      <label for="pat">PAT (private)</label>
+      <input id="pat" name="pat" type="password" autocomplete="off" spellcheck="false" placeholder="Fine-grained PAT">
       <button type="submit">Add Project</button>
-      ${error}
     </form>
   </main>
 </body>

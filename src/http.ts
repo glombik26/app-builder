@@ -45,13 +45,33 @@ async function handleRequest(
       return;
     }
     const url = form.fields.get("url") ?? "";
-    const result = await platform.addProject(url);
+    const pat = form.fields.get("pat") ?? "";
+    const result = await platform.addProject(url, pat);
     if (result.ok) {
       response.writeHead(303, { location: "/" });
       response.end();
       return;
     }
     sendHome(response, platform, { error: result.reason, url });
+    return;
+  }
+
+  const rotate = path.match(/^\/projects\/([^/]+)\/([^/]+)\/pat$/);
+  if (request.method === "POST" && rotate) {
+    const form = await readForm(request);
+    if (!form.ok) {
+      sendHome(response, platform, { error: form.reason });
+      return;
+    }
+    const owner = decodeURIComponent(rotate[1]!);
+    const name = decodeURIComponent(rotate[2]!);
+    const result = await platform.replaceProjectPat(owner, name, form.fields.get("pat") ?? "");
+    if (result.ok) {
+      response.writeHead(303, { location: "/" });
+      response.end();
+      return;
+    }
+    sendHome(response, platform, { error: result.reason });
     return;
   }
 

@@ -5,19 +5,82 @@ import type { GitAdapter, GitCloneResult } from "./platform.ts";
 export function createGitAdapter(): GitAdapter {
   return {
     async clonePublic({ owner, name, dest }) {
-      const url = `https://github.com/${owner}/${name}.git`;
-      const cloned = await runGit(["-c", "credential.helper=", "clone", "--bare", url, dest]);
+      const url = publicGithubUrl(owner, name);
+      const cloned = await cloneBare(url, dest);
       if (!cloned.ok) {
-        return { ok: false, reason: publicCloneReason(cloned.reason) };
+        return cloned.reason === "Repository has no default branch."
+          ? cloned
+          : { ok: false, reason: publicCloneReason(cloned.reason) };
       }
-      const head = await runGit(["-C", dest, "rev-parse", "--verify", "HEAD"]);
-      if (!head.ok) {
+      return cloned;
+    },
+    async cloneWithPat({ owner, name, dest, credential }) {
+      const origin = publicGithubUrl(owner, name);
+      const cloned = await cloneBare(authenticatedGithubUrl(owner, name, credential), dest);
+      if (!cloned.ok) {
+        if (cloned.reason === "Repository has no default branch.") {
+          return cloned;
+        }
+        return { ok: false, reason: patCloneReason(redactCredential(cloned.reason, credential)) };
+      }
+      const reset = await runGit(["-C", dest, "remote", "set-url", "origin", origin]);
+      if (!reset.ok) {
         rmSync(dest, { recursive: true, force: true });
-        return { ok: false, reason: "Repository has no default branch." };
+        return { ok: false, reason: redactCredential(reset.reason, credential) };
+      }
+      return { ok: true };
+    },
+    async checkPat({ owner, name, credential }) {
+      const checked = await runGit([
+        "-c",
+        "credential.helper=",
+        "ls-remote",
+        authenticatedGithubUrl(owner, name, credential),
+      ]);
+      if (!checked.ok) {
+        return { ok: false, reason: patCloneReason(redactCredential(checked.reason, credential)) };
       }
       return { ok: true };
     },
   };
+}
+
+async function cloneBare(url: string, dest: string): Promise<GitCloneResult> {
+  const cloned = await runGit(["-c", "credential.helper=", "clone", "--bare", url, dest]);
+  if (!cloned.ok) {
+    return cloned;
+  }
+  const head = await runGit(["-C", dest, "rev-parse", "--verify", "HEAD"]);
+  if (!head.ok) {
+    rmSync(dest, { recursive: true, force: true });
+    return { ok: false, reason: "Repository has no default branch." };
+  }
+  return { ok: true };
+}
+
+function publicGithubUrl(owner: string, name: string): string {
+  return `https://github.com/${owner}/${name}.git`;
+}
+
+function authenticatedGithubUrl(owner: string, name: string, credential: string): string {
+  return `https://x-access-token:${encodeURIComponent(credential)}@github.com/${owner}/${name}.git`;
+}
+
+function redactCredential(reason: string, credential: string): string {
+  let redacted = reason;
+  for (const secret of [credential, encodeURIComponent(credential)]) {
+    if (secret.length > 0) {
+      redacted = redacted.split(secret).join("***");
+    }
+  }
+  return redacted.replace(/x-access-token:[^@\s]+@/gi, "x-access-token:***@");
+}
+
+function patCloneReason(reason: string): string {
+  if (isGitAuthFailure(reason)) {
+    return "PAT was rejected or the repository was not found.";
+  }
+  return reason;
 }
 
 function runGit(args: string[]): Promise<GitCloneResult> {
@@ -38,7 +101,7 @@ function runGit(args: string[]): Promise<GitCloneResult> {
         return;
       }
       const detail = Buffer.concat(stderr).toString("utf8").trim().split("\n").at(-1) ?? "";
-      const reason = detail.replace(/^fatal:\s*/i, "").trim() || "git clone failed";
+      const reason = detail.replace(/^fatal:\s*/i, "").trim() || "git failed";
       resolve({ ok: false, reason });
     });
   });
@@ -53,8 +116,14 @@ function gitEnv(): NodeJS.ProcessEnv {
 }
 
 function publicCloneReason(reason: string): string {
-  if (/could not read Username|terminal prompts disabled|Authentication failed|could not read Password/i.test(reason)) {
+  if (isGitAuthFailure(reason)) {
     return "Repository not found or is private.";
   }
   return reason;
+}
+
+function isGitAuthFailure(reason: string): boolean {
+  return /could not read Username|terminal prompts disabled|Authentication failed|could not read Password|invalid username or password/i.test(
+    reason,
+  );
 }

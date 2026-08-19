@@ -1,16 +1,25 @@
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export type GitCloneRequest = {
   owner: string;
   name: string;
   dest: string;
+  credential?: string;
+};
+
+export type GitPatRequest = {
+  owner: string;
+  name: string;
+  credential: string;
 };
 
 export type GitCloneResult = { ok: true } | { ok: false; reason: string };
 
 export type GitAdapter = {
   clonePublic(request: GitCloneRequest): Promise<GitCloneResult>;
+  cloneWithPat(request: GitCloneRequest & { credential: string }): Promise<GitCloneResult>;
+  checkPat(request: GitPatRequest): Promise<GitCloneResult>;
 };
 
 export type ComposeAdapter = object;
@@ -35,9 +44,12 @@ export type AddProjectResult =
   | { ok: true; project: Project }
   | { ok: false; reason: string };
 
+export type ReplacePatResult = { ok: true } | { ok: false; reason: string };
+
 export type Platform = {
   listProjects(): Project[];
-  addProject(input: string): Promise<AddProjectResult>;
+  addProject(input: string, pat?: string): Promise<AddProjectResult>;
+  replaceProjectPat(owner: string, name: string, pat: string): Promise<ReplacePatResult>;
 };
 
 const STATE_PROJECTS_DIR = join("state", "projects");
@@ -47,6 +59,12 @@ export function emptyAdapters(): Adapters {
   return {
     git: {
       async clonePublic() {
+        return { ok: false, reason: "Git adapter is not configured" };
+      },
+      async cloneWithPat() {
+        return { ok: false, reason: "Git adapter is not configured" };
+      },
+      async checkPat() {
         return { ok: false, reason: "Git adapter is not configured" };
       },
     },
@@ -68,7 +86,7 @@ export function createPlatform(options: {
     listProjects() {
       return loadProjects(recordsDir);
     },
-    async addProject(input) {
+    async addProject(input, pat) {
       const parsed = parseGitHubIdentity(input);
       if (!parsed.ok) {
         return parsed;
@@ -78,20 +96,52 @@ export function createPlatform(options: {
       if (existing) {
         return { ok: false, reason: `A Project ${existing.owner}/${existing.name} already exists.` };
       }
+      const credential = pat?.trim() || undefined;
       const dest = join(options.home, CLONES_DIR, owner, name);
       rmSync(dest, { recursive: true, force: true });
       mkdirSync(dirname(dest), { recursive: true });
-      const clone = await options.adapters.git.clonePublic({ owner, name, dest });
+      const clone = credential
+        ? await options.adapters.git.cloneWithPat({ owner, name, dest, credential })
+        : await options.adapters.git.clonePublic({ owner, name, dest });
       if (!clone.ok) {
         rmSync(dest, { recursive: true, force: true });
         return clone;
       }
       const ownerDir = join(recordsDir, owner);
       mkdirSync(ownerDir, { recursive: true });
+      if (credential) {
+        writePat(recordsDir, owner, name, credential);
+      }
       writeFileSync(join(ownerDir, `${name}.json`), `${JSON.stringify({ owner, name })}\n`);
       return { ok: true, project: { owner, name } };
     },
+    async replaceProjectPat(owner, name, pat) {
+      const credential = pat.trim();
+      if (!credential) {
+        return { ok: false, reason: "PAT is required." };
+      }
+      const existing = findProject(loadProjects(recordsDir), owner, name);
+      if (!existing) {
+        return { ok: false, reason: `Project ${owner}/${name} does not exist.` };
+      }
+      const check = await options.adapters.git.checkPat({
+        owner: existing.owner,
+        name: existing.name,
+        credential,
+      });
+      if (!check.ok) {
+        return check;
+      }
+      writePat(recordsDir, existing.owner, existing.name, credential);
+      return { ok: true };
+    },
   };
+}
+
+function writePat(recordsDir: string, owner: string, name: string, credential: string): void {
+  const path = join(recordsDir, owner, `${name}.pat`);
+  writeFileSync(path, `${credential}\n`, { mode: 0o600 });
+  chmodSync(path, 0o600);
 }
 
 function parseGitHubIdentity(input: string): AddProjectResult {
