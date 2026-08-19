@@ -68,6 +68,10 @@ _Avoid_: a single Feature candidate, staging-as-one-preview
 The Environment that runs the Project's long-lived `release` branch as one standing stack. One stack per Project. It exists from the first Freigabe TEST→PROD; that Freigabe creates `release` if needed. It has its own Platform-owned worktree, not a Feature's.
 _Avoid_: a second TEST, blue/green as a second Environment
 
+**Environment Secrets**:
+The key-value credentials a Project's stack uses in one Environment. DEV is shared by all Previews of that Project; TEST and PROD each have their own. They are not in Git.
+_Avoid_: env, config; the Project PAT; the Control-Plane Basic-Auth secret
+
 **Apply**:
 The Platform putting TEST or PROD onto a Tracking Ref SHA: the compose contract at the bare clone, then that Environment's worktree onto the SHA, then the Compose project in line. Poll, Freigabe, „jetzt ziehen“, and reboot are the same act.
 _Avoid_: deploy, sync, pull, update (as the name of this act)
