@@ -61,12 +61,44 @@ export type CompleteDeviceCodeResult = { ok: true } | { ok: false; reason: strin
 
 export type SendTurnResult = { ok: true } | { ok: false; reason: string };
 
+export type CancelTurnResult = { ok: true } | { ok: false; reason: string };
+
+export const HARNESS_SESSION_RULES =
+  "The Operator answers only after stopReason. Do not use ask_user_question, plan mode, or plan approval. There are no mid-turn permission cards.";
+
+export type SlotEvent =
+  | { kind: "text"; text: string }
+  | { kind: "tool_call"; title: string }
+  | { kind: "reasoning"; text: string }
+  | { kind: "turn_ended"; stopReason: string };
+
+export type FeatureSlot = {
+  prompt: string;
+  inFlight: boolean;
+  events: SlotEvent[];
+};
+
+export type HarnessTurnRequest = {
+  cwd: string;
+  prompt: string;
+  sessionId?: string;
+  alwaysApprove: true;
+  rules: string;
+};
+
 export type HarnessAdapter = {
   hasSubscription(): Promise<boolean>;
   startDeviceCode(): Promise<
     { ok: true; ceremony: DeviceCodeCeremony } | { ok: false; reason: string }
   >;
   completeDeviceCode(): Promise<CompleteDeviceCodeResult>;
+  ensureStageSkills(): void;
+  startTurn(
+    request: HarnessTurnRequest,
+    onEvent: (event: SlotEvent) => void,
+  ): Promise<{ ok: true; sessionId: string } | { ok: false; reason: string }>;
+  cancelTurn(cwd: string): Promise<CancelTurnResult>;
+  loadHistory(cwd: string, sessionId: string): Promise<SlotEvent[]>;
 };
 export type Clock = object;
 export type HostMemory = object;
@@ -148,12 +180,20 @@ export type Platform = {
   closeTicket(owner: string, name: string, featureName: string, ticketName: string): Promise<FeatureActResult>;
   subscription(): Promise<Subscription>;
   completeDeviceCode(): Promise<CompleteDeviceCodeResult>;
+  getSlot(owner: string, name: string, featureName: string): Promise<FeatureSlot | undefined>;
+  watchSlot(
+    owner: string,
+    name: string,
+    featureName: string,
+    listener: (event: SlotEvent) => void,
+  ): Promise<() => void>;
   sendTurn(
     owner: string,
     name: string,
     featureName: string,
     prompt: string,
   ): Promise<SendTurnResult>;
+  cancelTurn(owner: string, name: string, featureName: string): Promise<CancelTurnResult>;
 };
 
 const STATE_PROJECTS_DIR = join("state", "projects");
@@ -201,6 +241,16 @@ export function emptyAdapters(): Adapters {
       async completeDeviceCode() {
         return { ok: false, reason: "Harness adapter is not configured" };
       },
+      ensureStageSkills() {},
+      async startTurn() {
+        return { ok: false, reason: "Harness adapter is not configured" };
+      },
+      async cancelTurn() {
+        return { ok: false, reason: "Harness adapter is not configured" };
+      },
+      async loadHistory() {
+        return [];
+      },
     },
     clock: {},
     hostMemory: {},
@@ -213,6 +263,61 @@ export function createPlatform(options: {
 }): Platform {
   const recordsDir = join(options.home, STATE_PROJECTS_DIR);
   mkdirSync(recordsDir, { recursive: true });
+  options.adapters.harness.ensureStageSkills();
+
+  type SlotRuntime = {
+    events: SlotEvent[];
+    inFlight: boolean;
+    watchers: Set<(event: SlotEvent) => void>;
+  };
+  const runtimes = new Map<string, SlotRuntime>();
+
+  function runtimeKey(project: Project, featureName: string): string {
+    return `${project.owner}/${project.name}/${featureName}`;
+  }
+
+  function ensureRuntime(key: string): SlotRuntime {
+    const existing = runtimes.get(key);
+    if (existing) {
+      return existing;
+    }
+    const created: SlotRuntime = { events: [], inFlight: false, watchers: new Set() };
+    runtimes.set(key, created);
+    return created;
+  }
+
+  function publish(runtime: SlotRuntime, event: SlotEvent): void {
+    runtime.events.push(event);
+    if (event.kind === "turn_ended") {
+      runtime.inFlight = false;
+    }
+    for (const watcher of runtime.watchers) {
+      watcher(event);
+    }
+  }
+
+  function grillPrompt(feature: Feature, sessionId: string | undefined): string {
+    if (feature.openStage !== "grill-with-docs" || sessionId) {
+      return "";
+    }
+    return `/grill-with-docs ${feature.name}`;
+  }
+
+  async function hydrateSlot(
+    project: Project,
+    record: FeatureRecord,
+  ): Promise<SlotRuntime> {
+    const key = runtimeKey(project, record.name);
+    const runtime = ensureRuntime(key);
+    const sessionId = record.slots["grill-with-docs"];
+    if (!runtime.inFlight && sessionId && runtime.events.length === 0) {
+      runtime.events = await options.adapters.harness.loadHistory(
+        featureWorktree(options.home, project, record.name),
+        sessionId,
+      );
+    }
+    return runtime;
+  }
 
   const platform: Platform = {
     listProjects() {
@@ -357,6 +462,12 @@ export function createPlatform(options: {
       if (!feature) {
         return { ok: false, reason: `Feature ${featureName} does not exist.` };
       }
+      const key = runtimeKey(project, feature.name);
+      const runtime = runtimes.get(key);
+      if (runtime?.inFlight) {
+        await options.adapters.harness.cancelTurn(featureWorktree(options.home, project, feature.name));
+      }
+      runtimes.delete(key);
       await options.adapters.compose.removePreview({
         composeProject: previewComposeProject(project, feature.name),
       });
@@ -483,15 +594,82 @@ export function createPlatform(options: {
     async completeDeviceCode() {
       return options.adapters.harness.completeDeviceCode();
     },
-    async sendTurn(owner, name, featureName, _prompt) {
+    async getSlot(owner, name, featureName) {
+      const loaded = loadFeatureRecord(recordsDir, owner, name, featureName);
+      if (!loaded.ok) {
+        return undefined;
+      }
+      const feature = viewFeature(options.home, loaded.project, loaded.record);
+      const runtime = await hydrateSlot(loaded.project, loaded.record);
+      return {
+        prompt: grillPrompt(feature, loaded.record.slots["grill-with-docs"]),
+        inFlight: runtime.inFlight,
+        events: [...runtime.events],
+      };
+    },
+    async watchSlot(owner, name, featureName, listener) {
+      const loaded = loadFeatureRecord(recordsDir, owner, name, featureName);
+      if (!loaded.ok) {
+        return () => {};
+      }
+      const runtime = await hydrateSlot(loaded.project, loaded.record);
+      runtime.watchers.add(listener);
+      return () => {
+        runtime.watchers.delete(listener);
+      };
+    },
+    async sendTurn(owner, name, featureName, prompt) {
       if (!(await options.adapters.harness.hasSubscription())) {
         return { ok: false, reason: "Device-code ceremony is required before sending a Turn." };
       }
-      const feature = platform.getFeature(owner, name, featureName);
-      if (!feature) {
-        return { ok: false, reason: `Feature ${featureName} does not exist.` };
+      const loaded = loadFeatureRecord(recordsDir, owner, name, featureName);
+      if (!loaded.ok) {
+        return loaded;
+      }
+      const { project, record } = loaded;
+      const key = runtimeKey(project, record.name);
+      const runtime = ensureRuntime(key);
+      if (runtime.inFlight) {
+        return { ok: false, reason: "A Turn is already in flight." };
+      }
+      const worktree = featureWorktree(options.home, project, record.name);
+      runtime.inFlight = true;
+      const request: HarnessTurnRequest = {
+        cwd: worktree,
+        prompt,
+        alwaysApprove: true,
+        rules: HARNESS_SESSION_RULES,
+      };
+      if (record.slots["grill-with-docs"]) {
+        request.sessionId = record.slots["grill-with-docs"];
+      }
+      const started = await options.adapters.harness.startTurn(request, (event) => {
+        publish(runtime, event);
+      });
+      if (!started.ok) {
+        runtime.inFlight = false;
+        return started;
+      }
+      if (started.sessionId) {
+        writeFeatureRecord(recordsDir, project, {
+          ...record,
+          slots: { ...record.slots, "grill-with-docs": started.sessionId },
+        });
       }
       return { ok: true };
+    },
+    async cancelTurn(owner, name, featureName) {
+      const loaded = loadFeatureRecord(recordsDir, owner, name, featureName);
+      if (!loaded.ok) {
+        return loaded;
+      }
+      const runtime = runtimes.get(runtimeKey(loaded.project, loaded.record.name));
+      if (!runtime?.inFlight) {
+        return { ok: false, reason: "No Turn is in flight." };
+      }
+      return options.adapters.harness.cancelTurn(
+        featureWorktree(options.home, loaded.project, loaded.record.name),
+      );
     },
     async closeTicket(owner, name, featureName, ticketName) {
       const loaded = loadFeatureRecord(recordsDir, owner, name, featureName);
@@ -626,12 +804,17 @@ function featureSlugCollision(
   };
 }
 
+type FeatureSlots = {
+  "grill-with-docs"?: string;
+};
+
 type FeatureRecord = {
   name: string;
   openStage: StageId;
   startedStages: StageId[];
   closedStages: StageId[];
   closedInImplement: string[];
+  slots: FeatureSlots;
 };
 
 function initialFeatureRecord(name: string): FeatureRecord {
@@ -641,6 +824,7 @@ function initialFeatureRecord(name: string): FeatureRecord {
     startedStages: ["grill-with-docs"],
     closedStages: [],
     closedInImplement: [],
+    slots: {},
   };
 }
 
@@ -659,7 +843,18 @@ function parseFeatureRecord(raw: unknown): FeatureRecord | undefined {
     closedInImplement: Array.isArray(recorded.closedInImplement)
       ? recorded.closedInImplement.filter((item): item is string => typeof item === "string")
       : [],
+    slots: parseFeatureSlots(recorded.slots),
   };
+}
+
+function parseFeatureSlots(raw: unknown): FeatureSlots {
+  if (!raw || typeof raw !== "object") {
+    return {};
+  }
+  const recorded = raw as FeatureSlots;
+  return typeof recorded["grill-with-docs"] === "string"
+    ? { "grill-with-docs": recorded["grill-with-docs"] }
+    : {};
 }
 
 export function isStageId(value: unknown): value is StageId {

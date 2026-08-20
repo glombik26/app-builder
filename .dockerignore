@@ -4,3 +4,4 @@ control-plane
 docs
 test
 *.md
+!src/skills/**/*.md

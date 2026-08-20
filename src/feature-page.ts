@@ -1,9 +1,10 @@
-import type { DeviceCodeCeremony, Feature, StageId } from "./platform.ts";
+import type { DeviceCodeCeremony, Feature, FeatureSlot, SlotEvent, StageId } from "./platform.ts";
 
 export type FeaturePageView = {
   feature: Feature;
   ceremony?: DeviceCodeCeremony;
   error?: string;
+  slot?: FeatureSlot;
 };
 
 export function renderFeaturePage(view: FeaturePageView): string {
@@ -64,6 +65,10 @@ export function renderFeaturePage(view: FeaturePageView): string {
       : "";
   const stageActions =
     actions.length === 0 ? "" : `<div class="stage-actions">${actions.join("")}</div>`;
+  const harness =
+    view.ceremony || !view.slot || feature.openStage !== "grill-with-docs"
+      ? ""
+      : renderHarness(featureHref, view.slot);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -254,6 +259,74 @@ export function renderFeaturePage(view: FeaturePageView): string {
     .device-code form {
       margin-top: 1.1rem;
     }
+    .harness {
+      margin-top: 1.4rem;
+    }
+    .stream {
+      list-style: none;
+      margin: 0.9rem 0 0;
+      padding: 0;
+      border-top: 1px solid var(--rule);
+    }
+    .stream li {
+      padding: 0.55rem 0;
+      border-bottom: 1px solid var(--rule);
+      white-space: pre-wrap;
+    }
+    .stream-reasoning {
+      color: var(--quiet);
+      font-style: italic;
+    }
+    .stream-tool {
+      font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
+      font-size: 0.92rem;
+    }
+    .stream-end {
+      color: var(--quiet);
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .prompt {
+      margin-top: 1.2rem;
+    }
+    .prompt textarea {
+      display: block;
+      width: 100%;
+      min-height: 6.5rem;
+      border: 2px solid var(--ink);
+      background: var(--field);
+      color: var(--ink);
+      padding: 0.6rem 0.7rem;
+      font: inherit;
+      resize: vertical;
+    }
+    .prompt-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      margin-top: 0.7rem;
+    }
+    .prompt button,
+    .cancel-turn button {
+      border: 2px solid var(--ink);
+      background: var(--ink);
+      color: var(--field);
+      padding: 0.35rem 0.85rem;
+      font: inherit;
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .prompt button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .cancel-turn button {
+      background: transparent;
+      color: var(--ink);
+    }
     .error {
       margin: 1.1rem 0 0;
       color: var(--alert);
@@ -276,6 +349,7 @@ export function renderFeaturePage(view: FeaturePageView): string {
     <ol class="stages">${rail}</ol>
     <section class="stage-body">
       <h2>${escapeHtml(feature.openStage)}</h2>
+      ${harness}
       ${tickets}
       ${stageActions}
     </section>
@@ -283,6 +357,75 @@ export function renderFeaturePage(view: FeaturePageView): string {
 </body>
 </html>
 `;
+}
+
+function renderHarness(featureHref: string, slot: FeatureSlot): string {
+  const disabled = slot.inFlight ? " disabled" : "";
+  const cancel = slot.inFlight
+    ? `<form class="cancel-turn" method="post" action="${escapeHtml(`${featureHref}/turns/cancel`)}"><button type="submit">Cancel</button></form>`
+    : "";
+  const events = slot.events.map(renderSlotEvent).join("");
+  return `<div class="harness">
+      <ol class="stream">${events}</ol>
+      <form class="prompt" method="post" action="${escapeHtml(`${featureHref}/turns`)}">
+        <textarea name="prompt"${disabled}>${escapeHtml(slot.prompt)}</textarea>
+        <div class="prompt-actions">
+          <button type="submit"${disabled}>Send</button>
+          ${cancel}
+        </div>
+      </form>
+    </div>
+    <script>
+      (() => {
+        const stream = document.querySelector(".stream");
+        const form = document.querySelector(".prompt");
+        const box = form && form.querySelector("textarea");
+        const send = form && form.querySelector("button[type=submit]");
+        const cancel = document.querySelector(".cancel-turn");
+        const source = new EventSource(${JSON.stringify(`${featureHref}/events`)});
+        source.onmessage = (message) => {
+          const event = JSON.parse(message.data);
+          if (stream) {
+            stream.insertAdjacentHTML("beforeend", eventHtml(event));
+          }
+          if (event.kind === "turn_ended") {
+            if (box) { box.disabled = false; box.value = ""; }
+            if (send) send.disabled = false;
+            if (cancel) cancel.remove();
+          }
+        };
+        function eventHtml(event) {
+          const kind = event.kind === "text" ? "stream-text"
+            : event.kind === "tool_call" ? "stream-tool"
+            : event.kind === "reasoning" ? "stream-reasoning"
+            : "stream-end";
+          const text = event.kind === "tool_call" ? event.title
+            : event.kind === "turn_ended" ? event.stopReason
+            : event.text;
+          return "<li class=\\"" + kind + "\\">" + escapeHtml(text || "") + "</li>";
+        }
+        function escapeHtml(value) {
+          return value
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;");
+        }
+      })();
+    </script>`;
+}
+
+function renderSlotEvent(event: SlotEvent): string {
+  if (event.kind === "text") {
+    return `<li class="stream-text">${escapeHtml(event.text)}</li>`;
+  }
+  if (event.kind === "tool_call") {
+    return `<li class="stream-tool">${escapeHtml(event.title)}</li>`;
+  }
+  if (event.kind === "reasoning") {
+    return `<li class="stream-reasoning">${escapeHtml(event.text)}</li>`;
+  }
+  return `<li class="stream-end">${escapeHtml(event.stopReason)}</li>`;
 }
 
 function nextStage(feature: Feature): StageId | undefined {

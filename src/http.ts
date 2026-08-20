@@ -9,7 +9,7 @@ export type ListenOptions = {
   port: number;
 };
 
-const MAX_FORM_BYTES = 8 * 1024;
+const MAX_FORM_BYTES = 64 * 1024;
 
 export function startControlPlane(
   platform: Platform,
@@ -146,6 +146,62 @@ async function handleRequest(
           ? await platform.reopenStage(owner, name, featureName, stage)
           : await platform.startStage(owner, name, featureName, stage);
     await sendFeatureAct(response, platform, owner, name, featureName, result);
+    return;
+  }
+
+  const sendTurn = path.match(
+    /^\/projects\/([^/]+)\/([^/]+)\/features\/([^/]+)\/turns$/,
+  );
+  if (request.method === "POST" && sendTurn) {
+    const owner = decodeURIComponent(sendTurn[1]!);
+    const name = decodeURIComponent(sendTurn[2]!);
+    const featureName = decodeURIComponent(sendTurn[3]!);
+    const form = await readForm(request);
+    const prompt = form.ok ? (form.fields.get("prompt") ?? "") : "";
+    const result = form.ok
+      ? await platform.sendTurn(owner, name, featureName, prompt)
+      : form;
+    await sendFeatureAct(response, platform, owner, name, featureName, result);
+    return;
+  }
+
+  const cancelTurn = path.match(
+    /^\/projects\/([^/]+)\/([^/]+)\/features\/([^/]+)\/turns\/cancel$/,
+  );
+  if (request.method === "POST" && cancelTurn) {
+    const owner = decodeURIComponent(cancelTurn[1]!);
+    const name = decodeURIComponent(cancelTurn[2]!);
+    const featureName = decodeURIComponent(cancelTurn[3]!);
+    const result = await platform.cancelTurn(owner, name, featureName);
+    await sendFeatureAct(response, platform, owner, name, featureName, result);
+    return;
+  }
+
+  const slotEvents = path.match(
+    /^\/projects\/([^/]+)\/([^/]+)\/features\/([^/]+)\/events$/,
+  );
+  if (request.method === "GET" && slotEvents) {
+    const owner = decodeURIComponent(slotEvents[1]!);
+    const name = decodeURIComponent(slotEvents[2]!);
+    const featureName = decodeURIComponent(slotEvents[3]!);
+    const slot = await platform.getSlot(owner, name, featureName);
+    if (!slot) {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+      return;
+    }
+    response.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    });
+    response.write(": ok\n\n");
+    const stop = await platform.watchSlot(owner, name, featureName, (event) => {
+      response.write(`data: ${JSON.stringify(event)}\n\n`);
+    });
+    request.on("close", () => {
+      stop();
+    });
     return;
   }
 
@@ -319,7 +375,8 @@ async function sendFeature(
   const error =
     extras.error ??
     (!subscription.present && "reason" in subscription ? subscription.reason : undefined);
-  sendHtml(response, renderFeaturePage({ feature, ceremony, error }));
+  const slot = await platform.getSlot(feature.project.owner, feature.project.name, feature.name);
+  sendHtml(response, renderFeaturePage({ feature, ceremony, error, slot }));
 }
 
 function safeReturnPath(path: string): string {

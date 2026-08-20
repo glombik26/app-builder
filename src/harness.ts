@@ -1,8 +1,17 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import type { DeviceCodeCeremony, HarnessAdapter } from "./platform.ts";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type {
+  DeviceCodeCeremony,
+  HarnessAdapter,
+  HarnessTurnRequest,
+  SlotEvent,
+} from "./platform.ts";
+
+const STAGE_SKILLS = ["grill-with-docs", "to-spec", "to-tickets", "implement"] as const;
+const SKILL_SOURCE = join(dirname(fileURLToPath(import.meta.url)), "skills");
 
 export function createHarnessAdapter(options: {
   grokHome?: string;
@@ -14,6 +23,7 @@ export function createHarnessAdapter(options: {
   let ceremony: DeviceCodeCeremony | undefined;
   let output = "";
   let exitCode: number | null | undefined;
+  const liveTurns = new Map<string, LiveTurn>();
 
   function authPath(): string {
     return join(grokHome, "auth.json");
@@ -96,6 +106,65 @@ export function createHarnessAdapter(options: {
       resetChild();
       return { ok: false, reason };
     },
+    ensureStageSkills() {
+      for (const name of STAGE_SKILLS) {
+        const destDir = join(grokHome, "skills", name);
+        mkdirSync(destDir, { recursive: true });
+        copyFileSync(join(SKILL_SOURCE, name, "SKILL.md"), join(destDir, "SKILL.md"));
+      }
+    },
+    async startTurn(request, onEvent) {
+      if (liveTurns.has(request.cwd)) {
+        return { ok: false, reason: "A Turn is already in flight." };
+      }
+      try {
+        const turn = await spawnTurn(
+          grokBin,
+          grokEnv(),
+          request,
+          onEvent,
+          (live) => {
+            liveTurns.set(request.cwd, live);
+          },
+          () => {
+            liveTurns.delete(request.cwd);
+          },
+        );
+        return { ok: true, sessionId: turn.sessionId };
+      } catch (error) {
+        liveTurns.delete(request.cwd);
+        return {
+          ok: false,
+          reason: error instanceof Error ? error.message : "Harness Turn failed to start.",
+        };
+      }
+    },
+    async cancelTurn(cwd) {
+      const turn = liveTurns.get(cwd);
+      if (!turn) {
+        return { ok: false, reason: "No Turn is in flight." };
+      }
+      await turn.cancel();
+      return { ok: true };
+    },
+    async loadHistory(cwd, sessionId) {
+      const events: SlotEvent[] = [];
+      const process = openAcp(grokBin, grokEnv(), cwd, (update) => {
+        const event = mapSessionUpdate(update);
+        if (event) {
+          events.push(event);
+        }
+      });
+      try {
+        await initializeAcp(process);
+        await process.request("session/load", { sessionId, cwd });
+        return events;
+      } catch {
+        return events;
+      } finally {
+        process.kill();
+      }
+    },
     async completeDeviceCode() {
       if (await hasSubscription()) {
         resetChild();
@@ -173,4 +242,315 @@ function waitUntil<T>(
     };
     void tick();
   });
+}
+
+type JsonRpc = {
+  jsonrpc?: string;
+  id?: number | string;
+  method?: string;
+  params?: unknown;
+  result?: unknown;
+  error?: { message?: string };
+};
+
+type AcpProcess = {
+  request(method: string, params: unknown): Promise<unknown>;
+  notify(method: string, params: unknown): void;
+  send(method: string, params: unknown, onSettled: (result: unknown, error?: string) => void): void;
+  kill(): void;
+};
+
+type LiveTurn = {
+  sessionId: string;
+  cancel(): Promise<void>;
+};
+
+function openAcp(
+  grokBin: string,
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  onUpdate: (update: unknown) => void,
+  alwaysApprove = true,
+): AcpProcess {
+  const args = ["agent"];
+  if (alwaysApprove) {
+    args.push("--always-approve");
+  }
+  args.push("stdio");
+  const child = spawn(grokBin, args, { cwd, env });
+  let nextId = 1;
+  let buffer = "";
+  const pending = new Map<
+    number,
+    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  >();
+
+  function sendMessage(message: object): void {
+    child.stdin.write(`${JSON.stringify(message)}\n`);
+  }
+
+  function handle(message: JsonRpc): void {
+    if (message.method === "session/update") {
+      const params = message.params as { update?: unknown } | undefined;
+      onUpdate(params?.update ?? message.params);
+      return;
+    }
+    if (message.method === "session/request_permission") {
+      const params = message.params as { options?: { kind?: string; optionId?: string }[] };
+      const allow = params.options?.find(
+        (option) => option.kind === "allow_always" || option.kind === "allow_once",
+      );
+      sendMessage({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: allow
+          ? { outcome: { outcome: "selected", optionId: allow.optionId } }
+          : { outcome: { outcome: "cancelled" } },
+      });
+      return;
+    }
+    if (message.method === "fs/read_text_file" || message.method === "fs/readTextFile") {
+      const params = message.params as { path?: string };
+      try {
+        sendMessage({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: { content: readFileSync(params.path ?? "", "utf8") },
+        });
+      } catch (error) {
+        sendMessage({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: { code: -32000, message: error instanceof Error ? error.message : "read failed" },
+        });
+      }
+      return;
+    }
+    if (message.method === "fs/write_text_file" || message.method === "fs/writeTextFile") {
+      const params = message.params as { path?: string; content?: string };
+      try {
+        writeFileSync(params.path ?? "", params.content ?? "");
+        sendMessage({ jsonrpc: "2.0", id: message.id, result: {} });
+      } catch (error) {
+        sendMessage({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: { code: -32000, message: error instanceof Error ? error.message : "write failed" },
+        });
+      }
+      return;
+    }
+    if (message.id === undefined) {
+      return;
+    }
+    const waiter = pending.get(Number(message.id));
+    if (!waiter) {
+      return;
+    }
+    pending.delete(Number(message.id));
+    if (message.error) {
+      waiter.reject(new Error(message.error.message || "Harness request failed."));
+      return;
+    }
+    waiter.resolve(message.result);
+  }
+
+  child.stdout.on("data", (chunk: Buffer | string) => {
+    buffer += chunk.toString();
+    let newline = buffer.indexOf("\n");
+    while (newline !== -1) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (line) {
+        try {
+          handle(JSON.parse(line) as JsonRpc);
+        } catch {
+          // ignore non-JSON
+        }
+      }
+      newline = buffer.indexOf("\n");
+    }
+  });
+  child.on("error", (error) => {
+    for (const waiter of pending.values()) {
+      waiter.reject(error);
+    }
+    pending.clear();
+  });
+  child.on("close", () => {
+    for (const waiter of pending.values()) {
+      waiter.reject(new Error("Harness process exited."));
+    }
+    pending.clear();
+  });
+
+  return {
+    request(method, params) {
+      return new Promise((resolve, reject) => {
+        const id = nextId;
+        nextId += 1;
+        pending.set(id, { resolve, reject });
+        sendMessage({ jsonrpc: "2.0", id, method, params });
+      });
+    },
+    notify(method, params) {
+      sendMessage({ jsonrpc: "2.0", method, params });
+    },
+    send(method, params, onSettled) {
+      const id = nextId;
+      nextId += 1;
+      pending.set(id, {
+        resolve: (result) => onSettled(result),
+        reject: (error) => onSettled(undefined, error.message),
+      });
+      sendMessage({ jsonrpc: "2.0", id, method, params });
+    },
+    kill() {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGTERM");
+      }
+    },
+  };
+}
+
+async function initializeAcp(process: AcpProcess): Promise<void> {
+  const result = (await process.request("initialize", {
+    protocolVersion: 1,
+    clientCapabilities: {
+      fs: { readTextFile: true, writeTextFile: true },
+    },
+  })) as { authMethods?: { id?: string }[] };
+  const cached = result.authMethods?.some((method) => method.id === "cached_token");
+  if (cached) {
+    await process.request("authenticate", { methodId: "cached_token", _meta: { headless: true } });
+  }
+}
+
+async function spawnTurn(
+  grokBin: string,
+  env: NodeJS.ProcessEnv,
+  request: HarnessTurnRequest,
+  onEvent: (event: SlotEvent) => void,
+  onLive: (turn: LiveTurn) => void,
+  onDone: () => void,
+): Promise<LiveTurn> {
+  let ended = false;
+  let forwarding = false;
+  let sessionId = request.sessionId ?? "";
+  const process = openAcp(
+    grokBin,
+    env,
+    request.cwd,
+    (update) => {
+      if (!forwarding || ended) {
+        return;
+      }
+      const event = mapSessionUpdate(update);
+      if (event) {
+        onEvent(event);
+      }
+    },
+    request.alwaysApprove,
+  );
+
+  function finish(stopReason: string): void {
+    if (ended) {
+      return;
+    }
+    ended = true;
+    forwarding = false;
+    onEvent({ kind: "turn_ended", stopReason });
+    process.kill();
+    onDone();
+  }
+
+  const turn: LiveTurn = {
+    get sessionId() {
+      return sessionId;
+    },
+    async cancel() {
+      if (sessionId) {
+        process.notify("session/cancel", { sessionId });
+      }
+      const closed = await waitUntil(() => (ended ? true : undefined), 4_000);
+      if (!closed) {
+        finish("cancelled");
+      }
+    },
+  };
+  onLive(turn);
+
+  try {
+    await initializeAcp(process);
+    if (ended) {
+      return turn;
+    }
+    if (sessionId) {
+      await process.request("session/load", { sessionId, cwd: request.cwd });
+    } else {
+      const created = (await process.request("session/new", {
+        cwd: request.cwd,
+        mcpServers: [],
+        _meta: {
+          yoloMode: true,
+          rules: request.rules,
+        },
+      })) as { sessionId?: string };
+      if (!created.sessionId) {
+        throw new Error("Harness did not return a session identity.");
+      }
+      sessionId = created.sessionId;
+    }
+    if (ended) {
+      return turn;
+    }
+    forwarding = true;
+    process.send(
+      "session/prompt",
+      { sessionId, prompt: [{ type: "text", text: request.prompt }] },
+      (result) => {
+        const stop =
+          result && typeof result === "object" && "stopReason" in result
+            ? String((result as { stopReason: unknown }).stopReason)
+            : "end_turn";
+        finish(stop);
+      },
+    );
+    return turn;
+  } catch (error) {
+    if (ended) {
+      return turn;
+    }
+    process.kill();
+    onDone();
+    throw error;
+  }
+}
+
+function mapSessionUpdate(update: unknown): SlotEvent | undefined {
+  if (!update || typeof update !== "object") {
+    return undefined;
+  }
+  const body = update as {
+    sessionUpdate?: string;
+    content?: { text?: string };
+    title?: string;
+  };
+  if (
+    (body.sessionUpdate === "agent_message_chunk" || body.sessionUpdate === "user_message_chunk") &&
+    typeof body.content?.text === "string"
+  ) {
+    return { kind: "text", text: body.content.text };
+  }
+  if (body.sessionUpdate === "agent_thought_chunk" && typeof body.content?.text === "string") {
+    return { kind: "reasoning", text: body.content.text };
+  }
+  if (
+    (body.sessionUpdate === "tool_call" || body.sessionUpdate === "tool_call_update") &&
+    typeof body.title === "string" &&
+    body.title
+  ) {
+    return { kind: "tool_call", title: body.title };
+  }
+  return undefined;
 }
