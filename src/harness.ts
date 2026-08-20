@@ -152,14 +152,16 @@ export function createHarnessAdapter(options: {
       const process = openAcp(grokBin, grokEnv(), cwd, (update) => {
         const event = mapSessionUpdate(update);
         if (event) {
-          events.push(event);
+          appendHistoryEvent(events, event);
         }
       });
       try {
         await initializeAcp(process);
         await process.request("session/load", { sessionId, cwd, mcpServers: [] });
+        closeHistory(events);
         return events;
       } catch {
+        closeHistory(events);
         return events;
       } finally {
         process.kill();
@@ -524,6 +526,24 @@ async function spawnTurn(
     process.kill();
     onDone();
     throw error;
+  }
+}
+
+function historyIsOpen(events: SlotEvent[]): boolean {
+  const last = events.at(-1);
+  return last !== undefined && last.kind !== "turn_ended";
+}
+
+function appendHistoryEvent(events: SlotEvent[], event: SlotEvent): void {
+  if (event.kind === "prompt" && historyIsOpen(events)) {
+    events.push({ kind: "turn_ended", stopReason: "end_turn" });
+  }
+  events.push(event);
+}
+
+function closeHistory(events: SlotEvent[]): void {
+  if (historyIsOpen(events)) {
+    events.push({ kind: "turn_ended", stopReason: "end_turn" });
   }
 }
 

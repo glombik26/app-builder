@@ -628,8 +628,7 @@ export function createPlatform(options: {
         return loaded;
       }
       const { project, record } = loaded;
-      const key = runtimeKey(project, record.name);
-      const runtime = ensureRuntime(key);
+      const runtime = await hydrateSlot(project, record);
       if (runtime.inFlight) {
         return { ok: false, reason: "A Turn is already in flight." };
       }

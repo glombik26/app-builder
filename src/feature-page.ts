@@ -503,6 +503,10 @@ function renderHarness(featureHref: string, slot: FeatureSlot): string {
               open();
             }
             if (event.kind === "prompt") {
+              if (current.prompt || current.work.length || current.answer) {
+                current.ended = true;
+                current = open();
+              }
               current.prompt += event.text;
               continue;
             }
@@ -614,7 +618,11 @@ export function groupSlotTurns(events: SlotEvent[]): SlotTurn[] {
     }
     const turn = current;
     if (event.kind === "prompt") {
-      turn.prompt += event.text;
+      if (turn.prompt || turn.work.length > 0 || turn.answer) {
+        turn.ended = true;
+        current = open();
+      }
+      current.prompt += event.text;
       continue;
     }
     if (event.kind === "text") {

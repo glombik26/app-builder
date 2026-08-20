@@ -218,7 +218,7 @@ function subscribedTurningHarness(
     },
     async loadHistory(cwd, id) {
       loads.push({ cwd, sessionId: id });
-      return options.history ?? [];
+      return [...(options.history ?? [])];
     },
   };
 }
@@ -1751,6 +1751,57 @@ describe("Platform", () => {
     assert.equal(/<div class="turn-answer">/.test(live.slice(0, live.indexOf("<script>"))), false);
   });
 
+  it("keeps the first Turn's work and reply when a later prompt arrives without turn_ended", () => {
+    const feature: Feature = {
+      name: "login-form",
+      project: { owner: "acme", name: "widgets" },
+      stages: ["grill-with-docs", "to-spec", "to-tickets", "implement"],
+      openStage: "grill-with-docs",
+      stageStatuses: {
+        "grill-with-docs": "open",
+        "to-spec": "upcoming",
+        "to-tickets": "upcoming",
+        implement: "upcoming",
+      },
+      tickets: [],
+      preview: { status: "none", links: [] },
+    };
+    const events: SlotEvent[] = [
+      { kind: "prompt", text: "/grill-with-docs login-form" },
+      { kind: "tool_call", title: "Read CONTEXT.md" },
+      { kind: "text", text: "What is the Operator?" },
+      { kind: "prompt", text: "the Operator is the one human" },
+      { kind: "tool_call", title: "Read SPEC.md" },
+      { kind: "text", text: "Is DEV empty without an open Feature?" },
+    ];
+    assert.deepEqual(groupSlotTurns(events), [
+      {
+        prompt: "/grill-with-docs login-form",
+        work: [{ kind: "tool", title: "Read CONTEXT.md" }],
+        answer: "What is the Operator?",
+        ended: true,
+      },
+      {
+        prompt: "the Operator is the one human",
+        work: [{ kind: "tool", title: "Read SPEC.md" }],
+        answer: "Is DEV empty without an open Feature?",
+        ended: false,
+      },
+    ]);
+    const html = renderFeaturePage({
+      feature,
+      slot: { prompt: "", inFlight: false, events },
+    });
+    const body = html.slice(0, html.indexOf("<script>"));
+    assert.equal((body.match(/<article class="turn">/g) || []).length, 2);
+    assert.match(body, /<p class="turn-prompt">\/grill-with-docs login-form<\/p>/);
+    assert.match(body, /<li class="work-tool">Read CONTEXT\.md<\/li>/);
+    assert.match(body, /<div class="turn-answer">What is the Operator\?<\/div>/);
+    assert.match(body, /<p class="turn-prompt">the Operator is the one human<\/p>/);
+    assert.match(body, /<div class="turn-answer">Is DEV empty without an open Feature\?<\/div>/);
+    assert.equal(body.includes("I'll start by"), false);
+  });
+
   it("refuses another prompt until the Harness reports the Turn has ended", async () => {
     const harness = subscribedTurningHarness();
     const { platform } = await platformWithProjectAndHarness(newHome(), harness);
@@ -1868,6 +1919,62 @@ describe("Platform", () => {
       { cwd: join(home, "worktrees", "acme", "widgets", "login-form"), sessionId: "sess-grill" },
     ]);
     assert.equal(secondHarness.starts.length, 0);
+  });
+
+  it("hydrates history before a follow-up Turn so the first work and reply stay visible", async () => {
+    const history: SlotEvent[] = [
+      { kind: "prompt", text: "/grill-with-docs login-form" },
+      { kind: "tool_call", title: "Read CONTEXT.md" },
+      { kind: "text", text: "What is the Operator?" },
+    ];
+    const firstHarness = subscribedTurningHarness({ sessionId: "sess-grill" });
+    const home = newHome();
+    const { platform } = await platformWithProjectAndHarness(home, firstHarness);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    assert.equal(
+      (await platform.sendTurn("acme", "widgets", "login-form", "/grill-with-docs login-form")).ok,
+      true,
+    );
+    firstHarness.emit({ kind: "tool_call", title: "Read CONTEXT.md" });
+    firstHarness.emit({ kind: "text", text: "What is the Operator?" });
+    firstHarness.emit({ kind: "turn_ended", stopReason: "end_turn" });
+
+    const secondHarness = subscribedTurningHarness({
+      sessionId: "sess-grill",
+      history,
+    });
+    const second = createPlatform({
+      home,
+      adapters: { ...emptyAdapters(), git: unusedGit("should not clone or add a worktree"), harness: secondHarness },
+    });
+    assert.equal(
+      (await second.sendTurn("acme", "widgets", "login-form", "the Operator is the one human")).ok,
+      true,
+    );
+    secondHarness.emit({ kind: "tool_call", title: "Read SPEC.md" });
+    secondHarness.emit({ kind: "text", text: "Is DEV empty without an open Feature?" });
+    secondHarness.emit({ kind: "turn_ended", stopReason: "end_turn" });
+
+    assert.deepEqual(secondHarness.loads, [
+      { cwd: join(home, "worktrees", "acme", "widgets", "login-form"), sessionId: "sess-grill" },
+    ]);
+    const slot = await second.getSlot("acme", "widgets", "login-form");
+    assert.deepEqual(slot?.events, [
+      ...history,
+      { kind: "prompt", text: "the Operator is the one human" },
+      { kind: "tool_call", title: "Read SPEC.md" },
+      { kind: "text", text: "Is DEV empty without an open Feature?" },
+      { kind: "turn_ended", stopReason: "end_turn" },
+    ]);
+    const html = renderFeaturePage({
+      feature: second.getFeature("acme", "widgets", "login-form")!,
+      slot,
+    });
+    const body = html.slice(0, html.indexOf("<script>"));
+    assert.equal((body.match(/<article class="turn">/g) || []).length, 2);
+    assert.match(body, /<li class="work-tool">Read CONTEXT\.md<\/li>/);
+    assert.match(body, /<div class="turn-answer">What is the Operator\?<\/div>/);
+    assert.match(body, /<div class="turn-answer">Is DEV empty without an open Feature\?<\/div>/);
   });
 
   it("does not leave an idle Harness process after a Turn ends or a second Platform starts", async () => {

@@ -64,7 +64,32 @@ function handle(message) {
       jsonrpc: "2.0",
       method: "session/update",
       params: {
+        update: {
+          sessionUpdate: "tool_call",
+          title: "read_file",
+          toolCallId: "call-1",
+        },
+      },
+    });
+    send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
         update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } },
+      },
+    });
+    send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        update: { sessionUpdate: "user_message_chunk", content: { type: "text", text: "continue" } },
+      },
+    });
+    send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "later" } },
       },
     });
     send({ jsonrpc: "2.0", id, result: {} });
@@ -147,7 +172,12 @@ describe("createHarnessAdapter", () => {
 
     assert.deepEqual(await harness.loadHistory(cwd, first.sessionId), [
       { kind: "prompt", text: "hello" },
+      { kind: "tool_call", title: "read_file", id: "call-1" },
       { kind: "text", text: "hi" },
+      { kind: "turn_ended", stopReason: "end_turn" },
+      { kind: "prompt", text: "continue" },
+      { kind: "text", text: "later" },
+      { kind: "turn_ended", stopReason: "end_turn" },
     ]);
   });
 });
