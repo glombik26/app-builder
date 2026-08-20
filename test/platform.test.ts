@@ -13,13 +13,14 @@ import {
   type GitCloneRequest,
   type GitWorktreeRequest,
   type HarnessAdapter,
+  type Feature,
   type HarnessTurnRequest,
   type Platform,
   type SlotEvent,
   type StageId,
 } from "../src/platform.ts";
 import { createHarnessAdapter } from "../src/harness.ts";
-import { renderFeaturePage } from "../src/feature-page.ts";
+import { groupSlotTurns, renderFeaturePage } from "../src/feature-page.ts";
 import { renderHomePage } from "../src/home-page.ts";
 import { startControlPlane } from "../src/http.ts";
 import { renderProjectPage } from "../src/project-page.ts";
@@ -1659,6 +1660,7 @@ describe("Platform", () => {
     harness.emit({ kind: "turn_ended", stopReason: "end_turn" });
 
     assert.deepEqual(seen, [
+      { kind: "prompt", text: "go" },
       { kind: "reasoning", text: "checking the glossary" },
       { kind: "tool_call", title: "Read CONTEXT.md" },
       { kind: "text", text: "What is the Operator?" },
@@ -1673,49 +1675,80 @@ describe("Platform", () => {
     assert.match(html, /checking the glossary/);
     assert.match(html, /Read CONTEXT\.md/);
     assert.match(html, /What is the Operator\?/);
+    assert.match(html, /turn-answer/);
+    assert.match(html, /<details class="turn-work">/);
+    assert.equal(html.includes("<ol class=\"stream\">"), false);
     stop();
   });
 
-  it("renders consecutive Harness text and reasoning chunks as running blocks, not one line per token", () => {
-    const html = renderFeaturePage({
-      feature: {
-        name: "login-form",
-        project: { owner: "acme", name: "widgets" },
-        stages: ["grill-with-docs", "to-spec", "to-tickets", "implement"],
-        openStage: "grill-with-docs",
-        stageStatuses: {
-          "grill-with-docs": "open",
-          "to-spec": "upcoming",
-          "to-tickets": "upcoming",
-          implement: "upcoming",
-        },
-        tickets: [],
-        preview: { status: "none", links: [] },
+  it("shows the Operator prompt and last reply; work stays collapsed with only the current step live", () => {
+    const feature: Feature = {
+      name: "login-form",
+      project: { owner: "acme", name: "widgets" },
+      stages: ["grill-with-docs", "to-spec", "to-tickets", "implement"],
+      openStage: "grill-with-docs",
+      stageStatuses: {
+        "grill-with-docs": "open",
+        "to-spec": "upcoming",
+        "to-tickets": "upcoming",
+        implement: "upcoming",
       },
+      tickets: [],
+      preview: { status: "none", links: [] },
+    };
+    const events: SlotEvent[] = [
+      { kind: "prompt", text: "/grill-with-docs login-form" },
+      { kind: "text", text: "I'll" },
+      { kind: "text", text: " start by" },
+      { kind: "reasoning", text: "The" },
+      { kind: "reasoning", text: " user" },
+      { kind: "tool_call", title: "read_file" },
+      { kind: "tool_call", title: "Read CONTEXT.md" },
+      { kind: "text", text: "What" },
+      { kind: "text", text: " is the Operator?" },
+      { kind: "turn_ended", stopReason: "end_turn" },
+    ];
+    assert.deepEqual(groupSlotTurns(events), [
+      {
+        prompt: "/grill-with-docs login-form",
+        work: [
+          { kind: "status", text: "I'll start by" },
+          { kind: "reasoning", text: "The user" },
+          { kind: "tool", title: "Read CONTEXT.md" },
+        ],
+        answer: "What is the Operator?",
+        ended: true,
+      },
+    ]);
+    const html = renderFeaturePage({
+      feature,
+      slot: { prompt: "", inFlight: false, events },
+    });
+    assert.match(html, /<p class="turn-prompt">\/grill-with-docs login-form<\/p>/);
+    assert.match(html, /<div class="turn-answer">What is the Operator\?<\/div>/);
+    assert.match(html, /Work · 3 steps/);
+    assert.match(html, /<li class="work-status">I'll start by<\/li>/);
+    assert.match(html, /<li class="work-reasoning">The user<\/li>/);
+    assert.match(html, /<li class="work-tool">Read CONTEXT\.md<\/li>/);
+    assert.equal(html.includes('<li class="work-tool">read_file</li>'), false);
+    assert.equal(html.includes('class="work-now"'), false);
+    assert.equal(html.includes("<ol class=\"stream\">"), false);
+    assert.equal((html.match(/<article class="turn">/g) || []).length, 1);
+
+    const live = renderFeaturePage({
+      feature,
       slot: {
         prompt: "",
-        inFlight: false,
+        inFlight: true,
         events: [
-          { kind: "text", text: "I'll" },
-          { kind: "text", text: " start" },
-          { kind: "text", text: " by" },
-          { kind: "reasoning", text: "The" },
-          { kind: "reasoning", text: " user" },
-          { kind: "tool_call", title: "read_file" },
+          { kind: "prompt", text: "go" },
           { kind: "tool_call", title: "Read CONTEXT.md" },
-          { kind: "text", text: "What" },
-          { kind: "text", text: " is the Operator?" },
-          { kind: "turn_ended", stopReason: "end_turn" },
         ],
       },
     });
-    assert.match(html, /<li class="stream-text">I'll start by<\/li>/);
-    assert.match(html, /<li class="stream-reasoning">The user<\/li>/);
-    assert.match(html, /<li class="stream-text">What is the Operator\?<\/li>/);
-    assert.equal(html.split('class="stream-text"').length - 1, 2);
-    assert.equal(html.split('class="stream-reasoning"').length - 1, 1);
-    assert.equal(html.split('class="stream-tool"').length - 1, 2);
-    assert.equal(html.includes('<li class="stream-text">I\'ll</li>'), false);
+    assert.match(live, /<span class="work-now">Read CONTEXT\.md<\/span>/);
+    assert.match(live, /Work · 1 step/);
+    assert.equal(/<div class="turn-answer">/.test(live.slice(0, live.indexOf("<script>"))), false);
   });
 
   it("refuses another prompt until the Harness reports the Turn has ended", async () => {

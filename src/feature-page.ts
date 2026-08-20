@@ -262,34 +262,92 @@ export function renderFeaturePage(view: FeaturePageView): string {
     .harness {
       margin-top: 1.4rem;
     }
-    .stream {
-      list-style: none;
-      margin: 0.9rem 0 0;
-      padding: 0;
+    .turn {
       border-top: 1px solid var(--rule);
+      padding: 1.1rem 0 1.2rem;
     }
-    .stream li {
-      padding: 0.7rem 0;
-      border-bottom: 1px solid var(--rule);
+    .turn-label {
+      margin: 0;
+      font-size: 0.72rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--quiet);
+      font-weight: 700;
+    }
+    .turn-prompt {
+      margin: 0.4rem 0 0;
+      color: var(--ink);
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
-    .stream-reasoning {
-      color: var(--quiet);
-      font-style: italic;
+    .turn-work {
+      margin: 0.8rem 0 0;
     }
-    .stream-tool {
+    .turn-work summary {
+      cursor: pointer;
+      list-style: none;
+    }
+    .turn-work summary::-webkit-details-marker {
+      display: none;
+    }
+    .work-count {
+      color: var(--quiet);
+      font-size: 0.72rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+    .work-now {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 0.4rem;
       font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
       font-size: 0.92rem;
     }
-    .stream-end {
+    .work-now::before {
+      content: "";
+      width: 0.5rem;
+      height: 0.5rem;
+      flex: none;
+      border-radius: 50%;
+      background: var(--mark);
+      animation: work-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes work-pulse {
+      50% { opacity: 0.35; }
+    }
+    .work-log {
+      list-style: none;
+      margin: 0.55rem 0 0;
+      padding: 0;
       color: var(--quiet);
-      font-size: 0.8rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
+      font-size: 0.88rem;
+    }
+    .work-log li {
+      padding: 0.22rem 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .work-tool {
+      font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
+      color: var(--ink);
+      font-size: 0.88rem;
+    }
+    .work-reasoning {
+      font-style: italic;
+    }
+    .turn-answer {
+      margin: 0.9rem 0 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
     .prompt {
+      position: sticky;
+      bottom: 0;
       margin-top: 1.2rem;
+      padding-top: 0.8rem;
+      background: var(--field);
     }
     .prompt textarea {
       display: block;
@@ -360,14 +418,26 @@ export function renderFeaturePage(view: FeaturePageView): string {
 `;
 }
 
+type TurnWorkStep =
+  | { kind: "tool"; title: string; id?: string }
+  | { kind: "reasoning"; text: string }
+  | { kind: "status"; text: string };
+
+type SlotTurn = {
+  prompt: string;
+  work: TurnWorkStep[];
+  answer: string;
+  ended: boolean;
+};
+
 function renderHarness(featureHref: string, slot: FeatureSlot): string {
   const disabled = slot.inFlight ? " disabled" : "";
   const cancel = slot.inFlight
     ? `<form class="cancel-turn" method="post" action="${escapeHtml(`${featureHref}/turns/cancel`)}"><button type="submit">Cancel</button></form>`
     : "";
-  const events = coalesceStreamEvents(slot.events).map(renderSlotEvent).join("");
+  const turns = groupSlotTurns(slot.events);
   return `<div class="harness">
-      <ol class="stream">${events}</ol>
+      <div class="turns">${turns.map((turn, index) => renderTurn(turn, slot.inFlight && index === turns.length - 1)).join("")}</div>
       <form class="prompt" method="post" action="${escapeHtml(`${featureHref}/turns`)}">
         <textarea name="prompt"${disabled}>${escapeHtml(slot.prompt)}</textarea>
         <div class="prompt-actions">
@@ -378,43 +448,211 @@ function renderHarness(featureHref: string, slot: FeatureSlot): string {
     </div>
     <script>
       (() => {
-        const stream = document.querySelector(".stream");
+        const events = ${JSON.stringify(slot.events)};
+        const root = document.querySelector(".turns");
         const form = document.querySelector(".prompt");
         const box = form && form.querySelector("textarea");
         const send = form && form.querySelector("button[type=submit]");
         const cancel = document.querySelector(".cancel-turn");
+        let inFlight = ${slot.inFlight ? "true" : "false"};
         const source = new EventSource(${JSON.stringify(`${featureHref}/events`)});
         source.onmessage = (message) => {
           const event = JSON.parse(message.data);
-          if (stream) {
-            appendStreamEvent(stream, event);
+          events.push(event);
+          if (event.kind === "prompt") {
+            inFlight = true;
           }
           if (event.kind === "turn_ended") {
+            inFlight = false;
             if (box) { box.disabled = false; box.value = ""; }
             if (send) send.disabled = false;
             if (cancel) cancel.remove();
           }
-        };
-        function appendStreamEvent(root, event) {
-          const className = event.kind === "text" ? "stream-text"
-            : event.kind === "tool_call" ? "stream-tool"
-            : event.kind === "reasoning" ? "stream-reasoning"
-            : "stream-end";
-          const text = event.kind === "tool_call" ? event.title
-            : event.kind === "turn_ended" ? event.stopReason
-            : (event.text || "");
-          const last = root.lastElementChild;
-          if ((event.kind === "text" || event.kind === "reasoning") && last && last.className === className) {
-            last.textContent += text;
-            return;
+          if (root) {
+            root.innerHTML = renderTurns(groupTurns(coalesce(events)), inFlight);
           }
-          const item = document.createElement("li");
-          item.className = className;
-          item.textContent = text;
-          root.appendChild(item);
+        };
+        function coalesce(list) {
+          const blocks = [];
+          for (const event of list) {
+            const last = blocks[blocks.length - 1];
+            if (last && last.kind === event.kind && (event.kind === "text" || event.kind === "reasoning" || event.kind === "prompt")) {
+              blocks[blocks.length - 1] = { kind: event.kind, text: last.text + event.text };
+              continue;
+            }
+            blocks.push(event);
+          }
+          return blocks;
+        }
+        function groupTurns(list) {
+          const turns = [];
+          let current;
+          const open = () => {
+            current = { prompt: "", work: [], answer: "", ended: false };
+            turns.push(current);
+            return current;
+          };
+          const demote = (turn) => {
+            if (turn.answer) {
+              turn.work.push({ kind: "status", text: turn.answer });
+              turn.answer = "";
+            }
+          };
+          for (const event of list) {
+            if (!current || current.ended) {
+              open();
+            }
+            if (event.kind === "prompt") {
+              current.prompt += event.text;
+              continue;
+            }
+            if (event.kind === "text") {
+              current.answer += event.text;
+              continue;
+            }
+            if (event.kind === "reasoning") {
+              demote(current);
+              const last = current.work[current.work.length - 1];
+              if (last && last.kind === "reasoning") {
+                last.text += event.text;
+              } else {
+                current.work.push({ kind: "reasoning", text: event.text });
+              }
+              continue;
+            }
+            if (event.kind === "tool_call") {
+              demote(current);
+              const last = current.work[current.work.length - 1];
+              if (last && last.kind === "tool" && mergeTool(last, event)) {
+                last.title = betterToolTitle(last.title, event.title);
+                if (event.id) last.id = event.id;
+              } else {
+                current.work.push({ kind: "tool", title: event.title, id: event.id });
+              }
+              continue;
+            }
+            if (event.kind === "turn_ended") {
+              current.ended = true;
+            }
+          }
+          return turns;
+        }
+        function mergeTool(last, event) {
+          if (event.id && last.id === event.id) return true;
+          if (event.id || last.id) return false;
+          return /^[a-z][a-z0-9_]*$/.test(last.title) && /[\\s/]/.test(event.title);
+        }
+        function betterToolTitle(a, b) {
+          if (!a) return b || "";
+          if (!b) return a;
+          return b.length >= a.length ? b : a;
+        }
+        function renderTurns(turns, live) {
+          return turns.map((turn, index) => renderTurn(turn, live && index === turns.length - 1)).join("");
+        }
+        function renderTurn(turn, live) {
+          const prompt = turn.prompt
+            ? "<p class=\\"turn-label\\">You</p><p class=\\"turn-prompt\\">" + esc(turn.prompt) + "</p>"
+            : "";
+          const current = live && !turn.answer && turn.work.length
+            ? turn.work[turn.work.length - 1]
+            : undefined;
+          const currentLabel = current
+            ? (current.kind === "tool" ? current.title : current.text)
+            : (live && !turn.answer ? "Working" : "");
+          const now = currentLabel
+            ? "<span class=\\"work-now\\">" + esc(currentLabel) + "</span>"
+            : "";
+          let work = "";
+          if (turn.work.length || (live && !turn.answer)) {
+            const count = turn.work.length
+              ? "Work · " + turn.work.length + (turn.work.length === 1 ? " step" : " steps")
+              : "Work";
+            const log = turn.work.map((step) => {
+              const cls = step.kind === "tool" ? "work-tool" : step.kind === "reasoning" ? "work-reasoning" : "work-status";
+              const text = step.kind === "tool" ? step.title : step.text;
+              return "<li class=\\"" + cls + "\\">" + esc(text) + "</li>";
+            }).join("");
+            work = "<details class=\\"turn-work\\"><summary><span class=\\"work-count\\">" + count + "</span>" + now + "</summary><ol class=\\"work-log\\">" + log + "</ol></details>";
+          }
+          const answer = turn.answer
+            ? "<p class=\\"turn-label\\">Reply</p><div class=\\"turn-answer\\">" + esc(turn.answer) + "</div>"
+            : "";
+          return "<article class=\\"turn\\">" + prompt + work + answer + "</article>";
+        }
+        function esc(value) {
+          return String(value || "")
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;");
         }
       })();
     </script>`;
+}
+
+export function groupSlotTurns(events: SlotEvent[]): SlotTurn[] {
+  const turns: SlotTurn[] = [];
+  let current: SlotTurn | undefined;
+
+  const open = (): SlotTurn => {
+    current = { prompt: "", work: [], answer: "", ended: false };
+    turns.push(current);
+    return current;
+  };
+
+  const demote = (turn: SlotTurn): void => {
+    if (turn.answer) {
+      turn.work.push({ kind: "status", text: turn.answer });
+      turn.answer = "";
+    }
+  };
+
+  for (const event of coalesceStreamEvents(events)) {
+    if (!current || current.ended) {
+      current = open();
+    }
+    const turn = current;
+    if (event.kind === "prompt") {
+      turn.prompt += event.text;
+      continue;
+    }
+    if (event.kind === "text") {
+      turn.answer += event.text;
+      continue;
+    }
+    if (event.kind === "reasoning") {
+      demote(turn);
+      const last = turn.work.at(-1);
+      if (last?.kind === "reasoning") {
+        last.text += event.text;
+      } else {
+        turn.work.push({ kind: "reasoning", text: event.text });
+      }
+      continue;
+    }
+    if (event.kind === "tool_call") {
+      demote(turn);
+      const last = turn.work.at(-1);
+      if (last?.kind === "tool" && mergeToolStep(last, event)) {
+        last.title = betterToolTitle(last.title, event.title);
+        if (event.id) {
+          last.id = event.id;
+        }
+      } else {
+        turn.work.push(
+          event.id
+            ? { kind: "tool", title: event.title, id: event.id }
+            : { kind: "tool", title: event.title },
+        );
+      }
+      continue;
+    }
+    if (event.kind === "turn_ended") {
+      turn.ended = true;
+    }
+  }
+  return turns;
 }
 
 function coalesceStreamEvents(events: SlotEvent[]): SlotEvent[] {
@@ -429,22 +667,71 @@ function coalesceStreamEvents(events: SlotEvent[]): SlotEvent[] {
       blocks[blocks.length - 1] = { kind: "reasoning", text: last.text + event.text };
       continue;
     }
+    if (last?.kind === "prompt" && event.kind === "prompt") {
+      blocks[blocks.length - 1] = { kind: "prompt", text: last.text + event.text };
+      continue;
+    }
     blocks.push(event);
   }
   return blocks;
 }
 
-function renderSlotEvent(event: SlotEvent): string {
-  if (event.kind === "text") {
-    return `<li class="stream-text">${escapeHtml(event.text)}</li>`;
+function mergeToolStep(
+  last: { kind: "tool"; title: string; id?: string },
+  event: { kind: "tool_call"; title: string; id?: string },
+): boolean {
+  if (event.id && last.id === event.id) {
+    return true;
   }
-  if (event.kind === "tool_call") {
-    return `<li class="stream-tool">${escapeHtml(event.title)}</li>`;
+  if (event.id || last.id) {
+    return false;
   }
-  if (event.kind === "reasoning") {
-    return `<li class="stream-reasoning">${escapeHtml(event.text)}</li>`;
+  return /^[a-z][a-z0-9_]*$/.test(last.title) && /[\s/]/.test(event.title);
+}
+
+function betterToolTitle(current: string, next: string): string {
+  if (!current) {
+    return next;
   }
-  return `<li class="stream-end">${escapeHtml(event.stopReason)}</li>`;
+  if (!next) {
+    return current;
+  }
+  return next.length >= current.length ? next : current;
+}
+
+function renderTurn(turn: SlotTurn, live: boolean): string {
+  const prompt = turn.prompt
+    ? `<p class="turn-label">You</p><p class="turn-prompt">${escapeHtml(turn.prompt)}</p>`
+    : "";
+  const current = live && !turn.answer && turn.work.length > 0 ? turn.work.at(-1) : undefined;
+  const currentLabel = current
+    ? current.kind === "tool"
+      ? current.title
+      : current.text
+    : live && !turn.answer
+      ? "Working"
+      : "";
+  const now = currentLabel ? `<span class="work-now">${escapeHtml(currentLabel)}</span>` : "";
+  let work = "";
+  if (turn.work.length > 0 || (live && !turn.answer)) {
+    const count =
+      turn.work.length > 0
+        ? `Work · ${turn.work.length} ${turn.work.length === 1 ? "step" : "steps"}`
+        : "Work";
+    const log = turn.work
+      .map((step) => {
+        const cls =
+          step.kind === "tool" ? "work-tool" : step.kind === "reasoning" ? "work-reasoning" : "work-status";
+        const text = step.kind === "tool" ? step.title : step.text;
+        return `<li class="${cls}">${escapeHtml(text)}</li>`;
+      })
+      .join("");
+    work = `<details class="turn-work"><summary><span class="work-count">${escapeHtml(count)}</span>${now}</summary><ol class="work-log">${log}</ol></details>`;
+  }
+  const answer = turn.answer
+    ? `<p class="turn-label">Reply</p><div class="turn-answer">${escapeHtml(turn.answer)}</div>`
+    : "";
+  return `<article class="turn">${prompt}${work}${answer}</article>`;
 }
 
 function nextStage(feature: Feature): StageId | undefined {

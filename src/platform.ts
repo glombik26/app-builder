@@ -67,8 +67,9 @@ export const HARNESS_SESSION_RULES =
   "The Operator answers only after stopReason. Do not use ask_user_question, plan mode, or plan approval. There are no mid-turn permission cards.";
 
 export type SlotEvent =
+  | { kind: "prompt"; text: string }
   | { kind: "text"; text: string }
-  | { kind: "tool_call"; title: string }
+  | { kind: "tool_call"; title: string; id?: string }
   | { kind: "reasoning"; text: string }
   | { kind: "turn_ended"; stopReason: string };
 
@@ -634,6 +635,7 @@ export function createPlatform(options: {
       }
       const worktree = featureWorktree(options.home, project, record.name);
       runtime.inFlight = true;
+      publish(runtime, { kind: "prompt", text: prompt });
       const request: HarnessTurnRequest = {
         cwd: worktree,
         prompt,
@@ -647,6 +649,7 @@ export function createPlatform(options: {
         publish(runtime, event);
       });
       if (!started.ok) {
+        publish(runtime, { kind: "turn_ended", stopReason: "end_turn" });
         runtime.inFlight = false;
         return started;
       }

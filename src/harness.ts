@@ -446,7 +446,7 @@ async function spawnTurn(
         return;
       }
       const event = mapSessionUpdate(update);
-      if (event) {
+      if (event && event.kind !== "prompt") {
         onEvent(event);
       }
     },
@@ -535,22 +535,24 @@ function mapSessionUpdate(update: unknown): SlotEvent | undefined {
     sessionUpdate?: string;
     content?: { text?: string };
     title?: string;
+    toolCallId?: string;
   };
-  if (
-    (body.sessionUpdate === "agent_message_chunk" || body.sessionUpdate === "user_message_chunk") &&
-    typeof body.content?.text === "string"
-  ) {
+  if (body.sessionUpdate === "user_message_chunk" && typeof body.content?.text === "string") {
+    return { kind: "prompt", text: body.content.text };
+  }
+  if (body.sessionUpdate === "agent_message_chunk" && typeof body.content?.text === "string") {
     return { kind: "text", text: body.content.text };
   }
   if (body.sessionUpdate === "agent_thought_chunk" && typeof body.content?.text === "string") {
     return { kind: "reasoning", text: body.content.text };
   }
-  if (
-    (body.sessionUpdate === "tool_call" || body.sessionUpdate === "tool_call_update") &&
-    typeof body.title === "string" &&
-    body.title
-  ) {
-    return { kind: "tool_call", title: body.title };
+  if (body.sessionUpdate === "tool_call" || body.sessionUpdate === "tool_call_update") {
+    const title = typeof body.title === "string" ? body.title : "";
+    const id = typeof body.toolCallId === "string" ? body.toolCallId : undefined;
+    if (!title && !id) {
+      return undefined;
+    }
+    return id ? { kind: "tool_call", title, id } : { kind: "tool_call", title };
   }
   return undefined;
 }
