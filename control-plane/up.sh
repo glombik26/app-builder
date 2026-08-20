@@ -21,5 +21,7 @@ fi
 chmod 600 traefik/acme.json
 
 mkdir -p /var/lib/app-builder
+mkdir -p /root/.grok
+chmod 700 /root/.grok
 
 docker compose --env-file .env up -d --build

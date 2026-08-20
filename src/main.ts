@@ -1,4 +1,5 @@
 import { createGitAdapter } from "./git.ts";
+import { createHarnessAdapter } from "./harness.ts";
 import { startControlPlane } from "./http.ts";
 import { createPlatform, emptyAdapters } from "./platform.ts";
 
@@ -8,6 +9,6 @@ const port = Number(process.env.PLATFORM_PORT ?? "3847");
 
 const platform = createPlatform({
   home,
-  adapters: { ...emptyAdapters(), git: createGitAdapter() },
+  adapters: { ...emptyAdapters(), git: createGitAdapter(), harness: createHarnessAdapter() },
 });
 startControlPlane(platform, { host, port });

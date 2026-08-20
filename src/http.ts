@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { renderFeaturePage } from "./feature-page.ts";
 import { renderHomePage } from "./home-page.ts";
 import { renderProjectPage } from "./project-page.ts";
-import { isStageId, type Platform, type Project } from "./platform.ts";
+import { isStageId, type Feature, type Platform, type Project } from "./platform.ts";
 
 export type ListenOptions = {
   host: string;
@@ -37,6 +37,34 @@ async function handleRequest(
 
   if (request.method === "GET" && path === "/") {
     sendHome(response, platform);
+    return;
+  }
+
+  if (request.method === "POST" && path === "/device-code") {
+    const form = await readForm(request);
+    const result = await platform.completeDeviceCode();
+    const returnPath = form.ok ? (form.fields.get("return") ?? "/") : "/";
+    const safeReturn = safeReturnPath(returnPath);
+    if (result.ok) {
+      response.writeHead(303, { location: safeReturn });
+      response.end();
+      return;
+    }
+    if (safeReturn.startsWith("/projects/")) {
+      const featureMatch = safeReturn.match(/^\/projects\/([^/]+)\/([^/]+)\/features\/([^/]+)$/);
+      if (featureMatch) {
+        const feature = platform.getFeature(
+          decodeURIComponent(featureMatch[1]!),
+          decodeURIComponent(featureMatch[2]!),
+          decodeURIComponent(featureMatch[3]!),
+        );
+        if (feature) {
+          await sendFeature(response, platform, feature, { error: result.reason });
+          return;
+        }
+      }
+    }
+    sendHome(response, platform, { error: result.reason });
     return;
   }
 
@@ -117,7 +145,7 @@ async function handleRequest(
         : action === "reopen"
           ? await platform.reopenStage(owner, name, featureName, stage)
           : await platform.startStage(owner, name, featureName, stage);
-    sendFeatureAct(response, platform, owner, name, featureName, result);
+    await sendFeatureAct(response, platform, owner, name, featureName, result);
     return;
   }
 
@@ -130,7 +158,7 @@ async function handleRequest(
     const featureName = decodeURIComponent(closeTicket[3]!);
     const ticketName = decodeURIComponent(closeTicket[4]!);
     const result = await platform.closeTicket(owner, name, featureName, ticketName);
-    sendFeatureAct(response, platform, owner, name, featureName, result);
+    await sendFeatureAct(response, platform, owner, name, featureName, result);
     return;
   }
 
@@ -157,7 +185,7 @@ async function handleRequest(
       response.end("Not found");
       return;
     }
-    sendHtml(response, renderFeaturePage({ feature, error: result.reason }));
+    await sendFeature(response, platform, feature, { error: result.reason });
     return;
   }
 
@@ -173,7 +201,7 @@ async function handleRequest(
       response.end("Not found");
       return;
     }
-    sendHtml(response, renderFeaturePage({ feature }));
+    await sendFeature(response, platform, feature);
     return;
   }
 
@@ -257,14 +285,14 @@ function sendProject(
   );
 }
 
-function sendFeatureAct(
+async function sendFeatureAct(
   response: ServerResponse,
   platform: Platform,
   owner: string,
   name: string,
   featureName: string,
   result: { ok: true } | { ok: false; reason: string },
-): void {
+): Promise<void> {
   const feature = platform.getFeature(owner, name, featureName);
   if (!feature) {
     response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
@@ -276,7 +304,29 @@ function sendFeatureAct(
     response.end();
     return;
   }
-  sendHtml(response, renderFeaturePage({ feature, error: result.reason }));
+  await sendFeature(response, platform, feature, { error: result.reason });
+}
+
+async function sendFeature(
+  response: ServerResponse,
+  platform: Platform,
+  feature: Feature,
+  extras: { error?: string } = {},
+): Promise<void> {
+  const subscription = await platform.subscription();
+  const ceremony =
+    !subscription.present && "ceremony" in subscription ? subscription.ceremony : undefined;
+  const error =
+    extras.error ??
+    (!subscription.present && "reason" in subscription ? subscription.reason : undefined);
+  sendHtml(response, renderFeaturePage({ feature, ceremony, error }));
+}
+
+function safeReturnPath(path: string): string {
+  if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\") || path.includes("://")) {
+    return "/";
+  }
+  return path;
 }
 
 function featurePagePath(project: Project, featureName: string): string {

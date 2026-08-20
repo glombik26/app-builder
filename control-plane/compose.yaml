@@ -42,8 +42,10 @@ services:
       PLATFORM_HOME: /var/lib/app-builder
       PLATFORM_HOST: 0.0.0.0
       PLATFORM_PORT: "3847"
+      GROK_HOME: /root/.grok
     volumes:
       - /var/lib/app-builder:/var/lib/app-builder
+      - /root/.grok:/root/.grok
     networks:
       - proxy
     labels:

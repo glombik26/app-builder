@@ -1,7 +1,8 @@
-import type { Feature, StageId } from "./platform.ts";
+import type { DeviceCodeCeremony, Feature, StageId } from "./platform.ts";
 
 export type FeaturePageView = {
   feature: Feature;
+  ceremony?: DeviceCodeCeremony;
   error?: string;
 };
 
@@ -23,6 +24,18 @@ export function renderFeaturePage(view: FeaturePageView): string {
   const preview = `<p class="preview">Preview: ${escapeHtml(feature.preview.status)}</p>${links}`;
   const error = view.error
     ? `<p class="error" role="alert">${escapeHtml(view.error)}</p>`
+    : "";
+  const ceremony = view.ceremony
+    ? `<section class="device-code">
+      <h2>Device-code</h2>
+      <p>Open this URL on any device, confirm the code, and complete grok-build sign-in. This is not Control-Plane Basic Auth.</p>
+      <p class="verification-url"><a href="${escapeHtml(view.ceremony.verificationUrl)}" target="_blank" rel="noreferrer">${escapeHtml(view.ceremony.verificationUrl)}</a></p>
+      <p class="user-code">${escapeHtml(view.ceremony.userCode)}</p>
+      <form method="post" action="/device-code">
+        <input type="hidden" name="return" value="${escapeHtml(featureHref)}">
+        <button type="submit">Complete Device-code</button>
+      </form>
+    </section>`
     : "";
   const rail = feature.stages
     .map((stage) => {
@@ -199,7 +212,8 @@ export function renderFeaturePage(view: FeaturePageView): string {
       margin-top: 1.4rem;
     }
     .stage-actions button,
-    .tickets button {
+    .tickets button,
+    .device-code button {
       border: 2px solid var(--ink);
       background: var(--ink);
       color: var(--field);
@@ -209,6 +223,36 @@ export function renderFeaturePage(view: FeaturePageView): string {
       letter-spacing: 0.08em;
       text-transform: uppercase;
       cursor: pointer;
+    }
+    .device-code {
+      margin-top: 1.6rem;
+      padding-top: 0.2rem;
+    }
+    .device-code h2 {
+      margin: 0;
+      font-size: 0.78rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+    .device-code p {
+      margin: 0.7rem 0 0;
+    }
+    .verification-url {
+      font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
+      font-size: 0.92rem;
+      overflow-wrap: anywhere;
+    }
+    .verification-url a {
+      color: var(--mark);
+    }
+    .user-code {
+      font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
+      font-size: 1.4rem;
+      letter-spacing: 0.12em;
+      font-weight: 650;
+    }
+    .device-code form {
+      margin-top: 1.1rem;
     }
     .error {
       margin: 1.1rem 0 0;
@@ -228,6 +272,7 @@ export function renderFeaturePage(view: FeaturePageView): string {
       </form>
     </header>
     ${error}
+    ${ceremony}
     <ol class="stages">${rail}</ol>
     <section class="stage-body">
       <h2>${escapeHtml(feature.openStage)}</h2>

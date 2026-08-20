@@ -1,19 +1,23 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { once } from "node:events";
 import { describe, it } from "node:test";
+import type { AddressInfo } from "node:net";
 import {
   createPlatform,
   emptyAdapters,
   type GitAdapter,
   type GitCloneRequest,
   type GitWorktreeRequest,
+  type HarnessAdapter,
   type Platform,
   type StageId,
 } from "../src/platform.ts";
 import { renderFeaturePage } from "../src/feature-page.ts";
 import { renderHomePage } from "../src/home-page.ts";
+import { startControlPlane } from "../src/http.ts";
 import { renderProjectPage } from "../src/project-page.ts";
 
 function newHome(): string {
@@ -112,6 +116,57 @@ async function platformWithProject(home = newHome(), isDirty?: () => boolean) {
       isDirty,
     ),
   );
+  const added = await platform.addProject("https://github.com/acme/widgets");
+  assert.equal(added.ok, true);
+  return { home, platform, clones, worktrees, removed };
+}
+
+const DEVICE_CODE_CEREMONY = {
+  verificationUrl: "https://accounts.x.ai/oauth2/device?user_code=ABCD-EFGH",
+  userCode: "ABCD-EFGH",
+} as const;
+
+function missingSubscriptionHarness(grokHome: string): HarnessAdapter {
+  const state = { subscribed: false };
+  return {
+    async hasSubscription() {
+      return state.subscribed || existsSync(join(grokHome, "auth.json"));
+    },
+    async startDeviceCode() {
+      return { ok: true, ceremony: { ...DEVICE_CODE_CEREMONY } };
+    },
+    async completeDeviceCode() {
+      mkdirSync(grokHome, { recursive: true });
+      writeFileSync(join(grokHome, "auth.json"), '{"access_token":"test-subscription-token"}\n', {
+        mode: 0o600,
+      });
+      state.subscribed = true;
+      return { ok: true };
+    },
+  };
+}
+
+async function platformWithProjectAndHarness(
+  home: string,
+  harness: HarnessAdapter,
+  isDirty?: () => boolean,
+) {
+  const clones: GitCloneRequest[] = [];
+  const worktrees: GitWorktreeRequest[] = [];
+  const removed: GitWorktreeRequest[] = [];
+  const platform = createPlatform({
+    home,
+    adapters: {
+      ...emptyAdapters(),
+      git: succeedingGit(
+        (request) => clones.push(request),
+        (request) => worktrees.push(request),
+        (request) => removed.push(request),
+        isDirty,
+      ),
+      harness,
+    },
+  });
   const added = await platform.addProject("https://github.com/acme/widgets");
   assert.equal(added.ok, true);
   return { home, platform, clones, worktrees, removed };
@@ -1172,4 +1227,302 @@ describe("Platform", () => {
     assert.match(page, /action="\/projects\/acme\/widgets\/remove"/);
     assert.match(page, />Remove</);
   });
+
+  it("presents a new Device-code ceremony after a failed start", async () => {
+    let attempts = 0;
+    const harness: HarnessAdapter = {
+      async hasSubscription() {
+        return false;
+      },
+      async startDeviceCode() {
+        attempts += 1;
+        if (attempts === 1) {
+          return { ok: false, reason: "grok login exited" };
+        }
+        return { ok: true, ceremony: { ...DEVICE_CODE_CEREMONY } };
+      },
+      async completeDeviceCode() {
+        return { ok: false, reason: "Device-code authorization is still pending." };
+      },
+    };
+    const { platform } = await platformWithProjectAndHarness(newHome(), harness);
+
+    const first = await platform.subscription();
+    assert.deepEqual(first, { present: false, reason: "grok login exited" });
+    const second = await platform.subscription();
+    assert.deepEqual(second, { present: false, ceremony: { ...DEVICE_CODE_CEREMONY } });
+  });
+
+  it("presents a Device-code ceremony when the subscription is missing", async () => {
+    const grokHome = newHome();
+    const { platform } = await platformWithProjectAndHarness(newHome(), missingSubscriptionHarness(grokHome));
+
+    const subscription = await platform.subscription();
+
+    assert.deepEqual(subscription, {
+      present: false,
+      ceremony: {
+        verificationUrl: "https://accounts.x.ai/oauth2/device?user_code=ABCD-EFGH",
+        userCode: "ABCD-EFGH",
+      },
+    });
+  });
+
+  it("does not treat XAI_API_KEY as the Operator subscription", async () => {
+    const grokHome = newHome();
+    const previous = process.env.XAI_API_KEY;
+    process.env.XAI_API_KEY = "xai-not-a-subscription";
+    try {
+      const { platform } = await platformWithProjectAndHarness(
+        newHome(),
+        missingSubscriptionHarness(grokHome),
+      );
+      const subscription = await platform.subscription();
+      assert.equal(subscription.present, false);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.XAI_API_KEY;
+      } else {
+        process.env.XAI_API_KEY = previous;
+      }
+    }
+  });
+
+  it("does not start Device-code when listing Projects", async () => {
+    let started = 0;
+    const grokHome = newHome();
+    const harness = missingSubscriptionHarness(grokHome);
+    const counting: HarnessAdapter = {
+      ...harness,
+      async startDeviceCode() {
+        started += 1;
+        return harness.startDeviceCode();
+      },
+    };
+    const { platform } = await platformWithProjectAndHarness(newHome(), counting);
+    assert.deepEqual(platform.listProjects(), [{ owner: "acme", name: "widgets" }]);
+    assert.equal(started, 0);
+    await platform.subscription();
+    assert.equal(started, 1);
+  });
+
+  it("lets the Operator list and add Projects while the Device-code ceremony is pending", async () => {
+    const grokHome = newHome();
+    const home = newHome();
+    const { platform } = await platformWithProjectAndHarness(home, missingSubscriptionHarness(grokHome));
+
+    const subscription = await platform.subscription();
+    assert.equal(subscription.present, false);
+    assert.deepEqual(platform.listProjects(), [{ owner: "acme", name: "widgets" }]);
+
+    const sprockets = await platform.addProject("https://github.com/other/sprockets");
+    assert.equal(sprockets.ok, true);
+    assert.deepEqual(platform.listProjects(), [
+      { owner: "acme", name: "widgets" },
+      { owner: "other", name: "sprockets" },
+    ]);
+  });
+
+  it("blocks sending a Turn until the Device-code ceremony is completed", async () => {
+    const grokHome = newHome();
+    const { platform } = await platformWithProjectAndHarness(newHome(), missingSubscriptionHarness(grokHome));
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+
+    const blocked = await platform.sendTurn(
+      "acme",
+      "widgets",
+      "login-form",
+      "/grill-with-docs login-form",
+    );
+    assert.deepEqual(blocked, {
+      ok: false,
+      reason: "Device-code ceremony is required before sending a Turn.",
+    });
+    assert.deepEqual(platform.listProjects(), [{ owner: "acme", name: "widgets" }]);
+    assert.equal(platform.getFeature("acme", "widgets", "login-form")?.name, "login-form");
+
+    const completed = await platform.completeDeviceCode();
+    assert.deepEqual(completed, { ok: true });
+
+    const sent = await platform.sendTurn(
+      "acme",
+      "widgets",
+      "login-form",
+      "/grill-with-docs login-form",
+    );
+    assert.deepEqual(sent, { ok: true });
+    assert.deepEqual(await platform.subscription(), { present: true });
+  });
+
+  it("keeps the subscription token in the grok-build auth file, not as a Platform secret", async () => {
+    const grokHome = newHome();
+    const home = newHome();
+    const { platform } = await platformWithProjectAndHarness(home, missingSubscriptionHarness(grokHome));
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    assert.equal((await platform.completeDeviceCode()).ok, true);
+
+    const grokAuth = readFileSync(join(grokHome, "auth.json"), "utf8");
+    assert.match(grokAuth, /test-subscription-token/);
+    assert.equal(treeContains(home, "test-subscription-token"), false);
+    assert.equal(existsSync(join(home, "auth.json")), false);
+  });
+
+  it("renders the Device-code ceremony on the Feature, not on the Project list", async () => {
+    const grokHome = newHome();
+    const { platform } = await platformWithProjectAndHarness(newHome(), missingSubscriptionHarness(grokHome));
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const subscription = await platform.subscription();
+    assert.equal(subscription.present, false);
+    if (subscription.present || !("ceremony" in subscription)) {
+      return;
+    }
+
+    const home = renderHomePage({ projects: platform.listProjects() });
+    assert.match(home, /acme\/widgets/);
+    assert.equal(home.includes("Device-code"), false);
+    assert.equal(home.includes("ABCD-EFGH"), false);
+    assert.equal(home.includes("accounts.x.ai"), false);
+
+    const html = renderFeaturePage({
+      feature: platform.getFeature("acme", "widgets", "login-form")!,
+      ceremony: subscription.ceremony,
+    });
+    assert.match(html, /Device-code/);
+    assert.match(html, /ABCD-EFGH/);
+    assert.match(
+      html,
+      /https:\/\/accounts\.x\.ai\/oauth2\/device\?user_code=ABCD-EFGH/,
+    );
+    assert.match(html, /Complete Device-code/);
+    assert.equal(html.includes('name="username"'), false);
+    assert.equal(html.includes('name="password"'), false);
+    assert.match(html, />Abort</);
+  });
+
+  it("keeps Control-Plane Basic Auth a separate act from Device-code", async () => {
+    const grokHome = newHome();
+    const { platform } = await platformWithProjectAndHarness(newHome(), missingSubscriptionHarness(grokHome));
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const subscription = await platform.subscription();
+    assert.equal(subscription.present, false);
+    if (subscription.present || !("ceremony" in subscription)) {
+      return;
+    }
+
+    const html = renderFeaturePage({
+      feature: platform.getFeature("acme", "widgets", "login-form")!,
+      ceremony: subscription.ceremony,
+    });
+    assert.match(html, /Device-code/);
+    assert.equal(/www-authenticate/i.test(html), false);
+    assert.equal(/http basic/i.test(html), false);
+    assert.equal(html.includes('autocomplete="username"'), false);
+
+    assert.equal((await platform.completeDeviceCode()).ok, true);
+    const after = renderFeaturePage({
+      feature: platform.getFeature("acme", "widgets", "login-form")!,
+    });
+    assert.equal(after.includes("Device-code"), false);
+    assert.deepEqual(platform.listProjects(), [{ owner: "acme", name: "widgets" }]);
+  });
+
+  it("shows Device-code on the Feature screen and leaves Home as the Project list", async () => {
+    const grokHome = newHome();
+    const { platform } = await platformWithProjectAndHarness(
+      newHome(),
+      missingSubscriptionHarness(grokHome),
+    );
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+
+    await withControlPlane(platform, async (base) => {
+      const home = await fetch(`${base}/`);
+      assert.equal(home.status, 200);
+      const homeHtml = await home.text();
+      assert.match(homeHtml, /acme\/widgets/);
+      assert.equal(homeHtml.includes("Device-code"), false);
+      assert.equal(homeHtml.includes("ABCD-EFGH"), false);
+
+      const feature = await fetch(`${base}/projects/acme/widgets/features/login-form`);
+      assert.equal(feature.status, 200);
+      const featureHtml = await feature.text();
+      assert.match(featureHtml, /Device-code/);
+      assert.match(featureHtml, /ABCD-EFGH/);
+      assert.match(featureHtml, /Complete Device-code/);
+    });
+  });
+
+  it("completes Device-code on the Feature and then allows sending a Turn", async () => {
+    const grokHome = newHome();
+    const { platform } = await platformWithProjectAndHarness(
+      newHome(),
+      missingSubscriptionHarness(grokHome),
+    );
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+
+    await withControlPlane(platform, async (base) => {
+      const submitted = await fetch(`${base}/device-code`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "return=/projects/acme/widgets/features/login-form",
+        redirect: "manual",
+      });
+      assert.equal(submitted.status, 303);
+      assert.equal(
+        submitted.headers.get("location"),
+        "/projects/acme/widgets/features/login-form",
+      );
+
+      const feature = await fetch(`${base}/projects/acme/widgets/features/login-form`);
+      const html = await feature.text();
+      assert.equal(html.includes("Device-code"), false);
+    });
+
+    const sent = await platform.sendTurn(
+      "acme",
+      "widgets",
+      "login-form",
+      "/grill-with-docs login-form",
+    );
+    assert.deepEqual(sent, { ok: true });
+  });
 });
+
+async function withControlPlane(platform: Platform, run: (base: string) => Promise<void>): Promise<void> {
+  const server = startControlPlane(platform, { host: "127.0.0.1", port: 0 });
+  if (!server.listening) {
+    await once(server, "listening");
+  }
+  const address = server.address() as AddressInfo;
+  try {
+    await run(`http://127.0.0.1:${address.port}`);
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
+}
+
+function treeContains(dir: string, needle: string): boolean {
+  if (!existsSync(dir)) {
+    return false;
+  }
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (treeContains(path, needle)) {
+        return true;
+      }
+      continue;
+    }
+    if (!entry.isFile()) {
+      continue;
+    }
+    try {
+      if (readFileSync(path, "utf8").includes(needle)) {
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}

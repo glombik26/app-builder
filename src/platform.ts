@@ -47,7 +47,27 @@ export type GitAdapter = {
 export type ComposeAdapter = {
   removePreview(request: { composeProject: string }): Promise<void>;
 };
-export type HarnessAdapter = object;
+export type DeviceCodeCeremony = {
+  verificationUrl: string;
+  userCode: string;
+};
+
+export type Subscription =
+  | { present: true }
+  | { present: false; ceremony: DeviceCodeCeremony }
+  | { present: false; reason: string };
+
+export type CompleteDeviceCodeResult = { ok: true } | { ok: false; reason: string };
+
+export type SendTurnResult = { ok: true } | { ok: false; reason: string };
+
+export type HarnessAdapter = {
+  hasSubscription(): Promise<boolean>;
+  startDeviceCode(): Promise<
+    { ok: true; ceremony: DeviceCodeCeremony } | { ok: false; reason: string }
+  >;
+  completeDeviceCode(): Promise<CompleteDeviceCodeResult>;
+};
 export type Clock = object;
 export type HostMemory = object;
 
@@ -126,6 +146,14 @@ export type Platform = {
   reopenStage(owner: string, name: string, featureName: string, stage: StageId): Promise<FeatureActResult>;
   startStage(owner: string, name: string, featureName: string, stage: StageId): Promise<FeatureActResult>;
   closeTicket(owner: string, name: string, featureName: string, ticketName: string): Promise<FeatureActResult>;
+  subscription(): Promise<Subscription>;
+  completeDeviceCode(): Promise<CompleteDeviceCodeResult>;
+  sendTurn(
+    owner: string,
+    name: string,
+    featureName: string,
+    prompt: string,
+  ): Promise<SendTurnResult>;
 };
 
 const STATE_PROJECTS_DIR = join("state", "projects");
@@ -163,7 +191,17 @@ export function emptyAdapters(): Adapters {
     compose: {
       async removePreview() {},
     },
-    harness: {},
+    harness: {
+      async hasSubscription() {
+        return false;
+      },
+      async startDeviceCode() {
+        return { ok: false, reason: "Harness adapter is not configured" };
+      },
+      async completeDeviceCode() {
+        return { ok: false, reason: "Harness adapter is not configured" };
+      },
+    },
     clock: {},
     hostMemory: {},
   };
@@ -431,6 +469,29 @@ export function createPlatform(options: {
       };
       writeFeatureRecord(recordsDir, project, next);
       return { ok: true, feature: viewFeature(options.home, project, next) };
+    },
+    async subscription() {
+      if (await options.adapters.harness.hasSubscription()) {
+        return { present: true };
+      }
+      const started = await options.adapters.harness.startDeviceCode();
+      if (!started.ok) {
+        return { present: false, reason: started.reason };
+      }
+      return { present: false, ceremony: started.ceremony };
+    },
+    async completeDeviceCode() {
+      return options.adapters.harness.completeDeviceCode();
+    },
+    async sendTurn(owner, name, featureName, _prompt) {
+      if (!(await options.adapters.harness.hasSubscription())) {
+        return { ok: false, reason: "Device-code ceremony is required before sending a Turn." };
+      }
+      const feature = platform.getFeature(owner, name, featureName);
+      if (!feature) {
+        return { ok: false, reason: `Feature ${featureName} does not exist.` };
+      }
+      return { ok: true };
     },
     async closeTicket(owner, name, featureName, ticketName) {
       const loaded = loadFeatureRecord(recordsDir, owner, name, featureName);
