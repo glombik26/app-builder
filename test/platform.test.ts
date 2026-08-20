@@ -1676,6 +1676,48 @@ describe("Platform", () => {
     stop();
   });
 
+  it("renders consecutive Harness text and reasoning chunks as running blocks, not one line per token", () => {
+    const html = renderFeaturePage({
+      feature: {
+        name: "login-form",
+        project: { owner: "acme", name: "widgets" },
+        stages: ["grill-with-docs", "to-spec", "to-tickets", "implement"],
+        openStage: "grill-with-docs",
+        stageStatuses: {
+          "grill-with-docs": "open",
+          "to-spec": "upcoming",
+          "to-tickets": "upcoming",
+          implement: "upcoming",
+        },
+        tickets: [],
+        preview: { status: "none", links: [] },
+      },
+      slot: {
+        prompt: "",
+        inFlight: false,
+        events: [
+          { kind: "text", text: "I'll" },
+          { kind: "text", text: " start" },
+          { kind: "text", text: " by" },
+          { kind: "reasoning", text: "The" },
+          { kind: "reasoning", text: " user" },
+          { kind: "tool_call", title: "read_file" },
+          { kind: "tool_call", title: "Read CONTEXT.md" },
+          { kind: "text", text: "What" },
+          { kind: "text", text: " is the Operator?" },
+          { kind: "turn_ended", stopReason: "end_turn" },
+        ],
+      },
+    });
+    assert.match(html, /<li class="stream-text">I'll start by<\/li>/);
+    assert.match(html, /<li class="stream-reasoning">The user<\/li>/);
+    assert.match(html, /<li class="stream-text">What is the Operator\?<\/li>/);
+    assert.equal(html.split('class="stream-text"').length - 1, 2);
+    assert.equal(html.split('class="stream-reasoning"').length - 1, 1);
+    assert.equal(html.split('class="stream-tool"').length - 1, 2);
+    assert.equal(html.includes('<li class="stream-text">I\'ll</li>'), false);
+  });
+
   it("refuses another prompt until the Harness reports the Turn has ended", async () => {
     const harness = subscribedTurningHarness();
     const { platform } = await platformWithProjectAndHarness(newHome(), harness);

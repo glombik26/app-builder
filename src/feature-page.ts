@@ -269,9 +269,10 @@ export function renderFeaturePage(view: FeaturePageView): string {
       border-top: 1px solid var(--rule);
     }
     .stream li {
-      padding: 0.55rem 0;
+      padding: 0.7rem 0;
       border-bottom: 1px solid var(--rule);
       white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
     .stream-reasoning {
       color: var(--quiet);
@@ -364,7 +365,7 @@ function renderHarness(featureHref: string, slot: FeatureSlot): string {
   const cancel = slot.inFlight
     ? `<form class="cancel-turn" method="post" action="${escapeHtml(`${featureHref}/turns/cancel`)}"><button type="submit">Cancel</button></form>`
     : "";
-  const events = slot.events.map(renderSlotEvent).join("");
+  const events = coalesceStreamEvents(slot.events).map(renderSlotEvent).join("");
   return `<div class="harness">
       <ol class="stream">${events}</ol>
       <form class="prompt" method="post" action="${escapeHtml(`${featureHref}/turns`)}">
@@ -386,7 +387,7 @@ function renderHarness(featureHref: string, slot: FeatureSlot): string {
         source.onmessage = (message) => {
           const event = JSON.parse(message.data);
           if (stream) {
-            stream.insertAdjacentHTML("beforeend", eventHtml(event));
+            appendStreamEvent(stream, event);
           }
           if (event.kind === "turn_ended") {
             if (box) { box.disabled = false; box.value = ""; }
@@ -394,25 +395,43 @@ function renderHarness(featureHref: string, slot: FeatureSlot): string {
             if (cancel) cancel.remove();
           }
         };
-        function eventHtml(event) {
-          const kind = event.kind === "text" ? "stream-text"
+        function appendStreamEvent(root, event) {
+          const className = event.kind === "text" ? "stream-text"
             : event.kind === "tool_call" ? "stream-tool"
             : event.kind === "reasoning" ? "stream-reasoning"
             : "stream-end";
           const text = event.kind === "tool_call" ? event.title
             : event.kind === "turn_ended" ? event.stopReason
-            : event.text;
-          return "<li class=\\"" + kind + "\\">" + escapeHtml(text || "") + "</li>";
-        }
-        function escapeHtml(value) {
-          return value
-            .replaceAll("&", "&amp;")
-            .replaceAll("<", "&lt;")
-            .replaceAll(">", "&gt;")
-            .replaceAll('"', "&quot;");
+            : (event.text || "");
+          const last = root.lastElementChild;
+          if ((event.kind === "text" || event.kind === "reasoning") && last && last.className === className) {
+            last.textContent += text;
+            return;
+          }
+          const item = document.createElement("li");
+          item.className = className;
+          item.textContent = text;
+          root.appendChild(item);
         }
       })();
     </script>`;
+}
+
+function coalesceStreamEvents(events: SlotEvent[]): SlotEvent[] {
+  const blocks: SlotEvent[] = [];
+  for (const event of events) {
+    const last = blocks.at(-1);
+    if (last?.kind === "text" && event.kind === "text") {
+      blocks[blocks.length - 1] = { kind: "text", text: last.text + event.text };
+      continue;
+    }
+    if (last?.kind === "reasoning" && event.kind === "reasoning") {
+      blocks[blocks.length - 1] = { kind: "reasoning", text: last.text + event.text };
+      continue;
+    }
+    blocks.push(event);
+  }
+  return blocks;
 }
 
 function renderSlotEvent(event: SlotEvent): string {
