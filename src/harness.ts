@@ -157,7 +157,7 @@ export function createHarnessAdapter(options: {
       });
       try {
         await initializeAcp(process);
-        await process.request("session/load", { sessionId, cwd });
+        await process.request("session/load", { sessionId, cwd, mcpServers: [] });
         return events;
       } catch {
         return events;
@@ -486,7 +486,7 @@ async function spawnTurn(
       return turn;
     }
     if (sessionId) {
-      await process.request("session/load", { sessionId, cwd: request.cwd });
+      await process.request("session/load", { sessionId, cwd: request.cwd, mcpServers: [] });
     } else {
       const created = (await process.request("session/new", {
         cwd: request.cwd,
