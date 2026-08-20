@@ -1,32 +1,24 @@
-import type { Project } from "./platform.ts";
+import type { Feature, Project } from "./platform.ts";
 
-export type HomePageView = {
-  projects: Project[];
+export type ProjectPageView = {
+  project: Project;
+  features: Feature[];
   error?: string;
-  url?: string;
+  name?: string;
 };
 
-export function renderHomePage(view: HomePageView): string {
+export function renderProjectPage(view: ProjectPageView): string {
+  const identity = `${escapeHtml(view.project.owner)}/${escapeHtml(view.project.name)}`;
+  const featuresHref = `/projects/${encodeURIComponent(view.project.owner)}/${encodeURIComponent(view.project.name)}/features`;
   const body =
-    view.projects.length === 0
-      ? `<p class="empty">No Projects.</p>`
-      : `<ul class="projects">${view.projects
-          .map((project) => {
-            const identity = `${escapeHtml(project.owner)}/${escapeHtml(project.name)}`;
-            const href = `/projects/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}`;
-            const action = `${href}/pat`;
-            const fieldId = `pat-${encodeURIComponent(project.owner)}-${encodeURIComponent(project.name)}`;
-            return `<li>
-              <a class="identity" href="${escapeHtml(href)}">${identity}</a>
-              <form class="rotate-pat" method="post" action="${escapeHtml(action)}">
-                <label for="${escapeHtml(fieldId)}">Replace PAT</label>
-                <input id="${escapeHtml(fieldId)}" name="pat" type="password" autocomplete="off" spellcheck="false" placeholder="Fine-grained PAT">
-                <button type="submit">Replace PAT</button>
-              </form>
-            </li>`;
+    view.features.length === 0
+      ? `<p class="empty">No Features.</p>`
+      : `<ul class="features">${view.features
+          .map((feature) => {
+            const href = `${featuresHref}/${encodeURIComponent(feature.name)}`;
+            return `<li><a class="identity" href="${escapeHtml(href)}">${escapeHtml(feature.name)}</a></li>`;
           })
           .join("")}</ul>`;
-
   const error = view.error
     ? `<p class="error" role="alert">${escapeHtml(view.error)}</p>`
     : "";
@@ -36,7 +28,7 @@ export function renderHomePage(view: HomePageView): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Projects</title>
+  <title>${identity}</title>
   <style>
     :root {
       --field: #d5dbe3;
@@ -72,28 +64,25 @@ export function renderHomePage(view: HomePageView): string {
       letter-spacing: 0.22em;
       text-transform: uppercase;
     }
-    .empty {
-      margin: 2.4rem 0 0;
-      color: var(--quiet);
-      font-size: 1.15rem;
-    }
-    .projects {
-      list-style: none;
-      margin: 1.6rem 0 0;
-      padding: 0;
-    }
-    .projects li {
-      border-bottom: 1px solid var(--rule);
-      padding: 0.9rem 0 1.1rem;
-    }
     .identity {
       font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
       font-size: 1rem;
       color: var(--ink);
       text-decoration: none;
     }
-    a.identity:hover {
-      border-bottom: 1px solid var(--ink);
+    .empty {
+      margin: 2.4rem 0 0;
+      color: var(--quiet);
+      font-size: 1.15rem;
+    }
+    .features {
+      list-style: none;
+      margin: 1.6rem 0 0;
+      padding: 0;
+    }
+    .features li {
+      border-bottom: 1px solid var(--rule);
+      padding: 0.9rem 0;
     }
     .mark {
       display: inline-block;
@@ -103,21 +92,28 @@ export function renderHomePage(view: HomePageView): string {
       background: var(--mark);
       vertical-align: 0.05rem;
     }
-    .add-project {
+    .home {
+      display: inline-block;
+      margin-bottom: 1.1rem;
+      color: var(--quiet);
+      font-size: 0.8rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      text-decoration: none;
+    }
+    .add-feature {
       margin-top: 2.4rem;
       padding-top: 1.4rem;
       border-top: 2px solid var(--ink);
     }
-    .add-project label,
-    .rotate-pat label {
+    .add-feature label {
       display: block;
       font-size: 0.72rem;
       font-weight: 700;
       letter-spacing: 0.16em;
       text-transform: uppercase;
     }
-    .add-project input,
-    .rotate-pat input {
+    .add-feature input {
       display: block;
       width: 100%;
       margin: 0.55rem 0 0.9rem;
@@ -129,13 +125,11 @@ export function renderHomePage(view: HomePageView): string {
       font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
       font-size: 1rem;
     }
-    .add-project input:focus,
-    .rotate-pat input:focus {
+    .add-feature input:focus {
       outline: none;
       border-bottom-width: 2px;
     }
-    .add-project button,
-    .rotate-pat button {
+    .add-feature button {
       border: 2px solid var(--ink);
       background: var(--ink);
       color: var(--field);
@@ -146,13 +140,6 @@ export function renderHomePage(view: HomePageView): string {
       text-transform: uppercase;
       cursor: pointer;
     }
-    .rotate-pat {
-      margin-top: 0.7rem;
-    }
-    .rotate-pat input {
-      margin: 0.45rem 0 0.7rem;
-      padding: 0.45rem 0.15rem;
-    }
     .error {
       margin: 1.1rem 0 0;
       color: var(--alert);
@@ -161,17 +148,16 @@ export function renderHomePage(view: HomePageView): string {
 </head>
 <body>
   <main>
+    <a class="home" href="/">Projects</a>
     <header>
-      <h1><span class="mark" aria-hidden="true"></span>Projects</h1>
+      <h1><span class="mark" aria-hidden="true"></span>${identity}</h1>
     </header>
     ${error}
     ${body}
-    <form class="add-project" method="post" action="/projects">
-      <label for="url">GitHub URL</label>
-      <input id="url" name="url" type="text" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/name" value="${escapeHtml(view.url ?? "")}">
-      <label for="pat">PAT (private)</label>
-      <input id="pat" name="pat" type="password" autocomplete="off" spellcheck="false" placeholder="Fine-grained PAT">
-      <button type="submit">Add Project</button>
+    <form class="add-feature" method="post" action="${escapeHtml(featuresHref)}">
+      <label for="name">Feature name</label>
+      <input id="name" name="name" type="text" autocomplete="off" spellcheck="false" placeholder="login-form" value="${escapeHtml(view.name ?? "")}">
+      <button type="submit">Create Feature</button>
     </form>
   </main>
 </body>

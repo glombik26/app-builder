@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { Platform } from "./platform.ts";
+import { renderFeaturePage } from "./feature-page.ts";
 import { renderHomePage } from "./home-page.ts";
+import { renderProjectPage } from "./project-page.ts";
+import type { Platform, Project } from "./platform.ts";
 
 export type ListenOptions = {
   host: string;
@@ -75,6 +77,93 @@ async function handleRequest(
     return;
   }
 
+  const abort = path.match(/^\/projects\/([^/]+)\/([^/]+)\/features\/([^/]+)\/abort$/);
+  if (request.method === "POST" && abort) {
+    const owner = decodeURIComponent(abort[1]!);
+    const name = decodeURIComponent(abort[2]!);
+    const featureName = decodeURIComponent(abort[3]!);
+    const project = findProject(platform, owner, name);
+    const result = await platform.abortFeature(owner, name, featureName);
+    if (result.ok) {
+      if (!project) {
+        response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+        response.end("Not found");
+        return;
+      }
+      response.writeHead(303, { location: projectPath(project) });
+      response.end();
+      return;
+    }
+    const feature = platform.getFeature(owner, name, featureName);
+    if (!feature) {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+      return;
+    }
+    sendHtml(response, renderFeaturePage({ feature, error: result.reason }));
+    return;
+  }
+
+  const featurePath = path.match(/^\/projects\/([^/]+)\/([^/]+)\/features\/([^/]+)$/);
+  if (request.method === "GET" && featurePath) {
+    const feature = platform.getFeature(
+      decodeURIComponent(featurePath[1]!),
+      decodeURIComponent(featurePath[2]!),
+      decodeURIComponent(featurePath[3]!),
+    );
+    if (!feature) {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+      return;
+    }
+    sendHtml(response, renderFeaturePage({ feature }));
+    return;
+  }
+
+  const createFeature = path.match(/^\/projects\/([^/]+)\/([^/]+)\/features$/);
+  if (request.method === "POST" && createFeature) {
+    const owner = decodeURIComponent(createFeature[1]!);
+    const name = decodeURIComponent(createFeature[2]!);
+    const project = findProject(platform, owner, name);
+    const form = await readForm(request);
+    const featureName = form.ok ? (form.fields.get("name") ?? "") : "";
+    if (!project) {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+      return;
+    }
+    if (!form.ok) {
+      sendProject(response, platform, project, { error: form.reason, name: featureName });
+      return;
+    }
+    const result = await platform.createFeature(owner, name, featureName);
+    if (result.ok) {
+      response.writeHead(303, {
+        location: `${projectPath(project)}/features/${encodeURIComponent(result.feature.name)}`,
+      });
+      response.end();
+      return;
+    }
+    sendProject(response, platform, project, { error: result.reason, name: featureName });
+    return;
+  }
+
+  const projectPathMatch = path.match(/^\/projects\/([^/]+)\/([^/]+)$/);
+  if (request.method === "GET" && projectPathMatch) {
+    const project = findProject(
+      platform,
+      decodeURIComponent(projectPathMatch[1]!),
+      decodeURIComponent(projectPathMatch[2]!),
+    );
+    if (!project) {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+      return;
+    }
+    sendProject(response, platform, project);
+    return;
+  }
+
   response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
   response.end("Not found");
 }
@@ -84,13 +173,50 @@ function sendHome(
   platform: Platform,
   extras: { error?: string; url?: string } = {},
 ): void {
-  const html = renderHomePage({
-    projects: platform.listProjects(),
-    error: extras.error,
-    url: extras.url,
-  });
+  sendHtml(
+    response,
+    renderHomePage({
+      projects: platform.listProjects(),
+      error: extras.error,
+      url: extras.url,
+    }),
+  );
+}
+
+function sendProject(
+  response: ServerResponse,
+  platform: Platform,
+  project: Project,
+  extras: { error?: string; name?: string } = {},
+): void {
+  sendHtml(
+    response,
+    renderProjectPage({
+      project,
+      features: platform.listFeatures(project.owner, project.name),
+      error: extras.error,
+      name: extras.name,
+    }),
+  );
+}
+
+function sendHtml(response: ServerResponse, html: string): void {
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
   response.end(html);
+}
+
+function findProject(platform: Platform, owner: string, name: string): Project | undefined {
+  const ownerKey = owner.toLowerCase();
+  const nameKey = name.toLowerCase();
+  return platform
+    .listProjects()
+    .find(
+      (project) => project.owner.toLowerCase() === ownerKey && project.name.toLowerCase() === nameKey,
+    );
+}
+
+function projectPath(project: Project): string {
+  return `/projects/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}`;
 }
 
 function urlPath(url: string | undefined): string {
