@@ -76,117 +76,166 @@ export function renderFeaturePage(view: FeaturePageView): string {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(feature.name)}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      --field: #d5dbe3;
-      --ink: #1e242c;
-      --rule: #7c8694;
-      --mark: #0b5f6b;
-      --quiet: #4a5360;
-      --alert: #8b2e2e;
+      --canvas: #0a0a0b;
+      --elevated: #141416;
+      --bubble: #262628;
+      --ink: #ececee;
+      --muted: #8d8d92;
+      --hair: rgba(255, 255, 255, 0.09);
+      --send: #f4f4f5;
+      --send-ink: #0a0a0b;
+      --alert: #ff7b72;
+      --live: #d4d4d8;
+      --field: var(--canvas);
+      --quiet: var(--muted);
+      --rule: var(--hair);
+      --mark: var(--live);
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; }
+    html { color-scheme: dark; }
     body {
       min-height: 100vh;
-      background: var(--field);
+      background: var(--canvas);
       color: var(--ink);
-      font-family: "Avenir Next", "Segoe UI Variable", "Segoe UI", sans-serif;
-      font-size: 1.05rem;
-      line-height: 1.45;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      font-size: 1.02rem;
+      line-height: 1.55;
     }
     main {
-      max-width: 52rem;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      max-width: 48rem;
       margin: 0 auto;
-      padding: 3.5rem 1.5rem 4rem;
+      padding: 0 1.15rem 0;
     }
     .home {
-      display: inline-block;
-      margin-bottom: 1.1rem;
-      color: var(--quiet);
-      font-size: 0.8rem;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      text-decoration: none;
+      display: none;
     }
     .chrome {
-      border-bottom: 2px solid var(--ink);
-      padding-bottom: 1.1rem;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-areas:
+        "project abort"
+        "title abort"
+        "preview abort";
+      gap: 0.15rem 1rem;
+      align-items: start;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      margin: 0 -1.15rem;
+      padding: 0.85rem 1.15rem 0.75rem;
+      background: linear-gradient(180deg, var(--canvas) 70%, transparent);
     }
     .project {
-      margin: 0 0 0.35rem;
-      font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
-      font-size: 0.9rem;
+      grid-area: project;
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 500;
     }
     .project a {
-      color: var(--ink);
+      color: inherit;
       text-decoration: none;
     }
+    .project a:hover { color: var(--ink); }
     h1 {
+      grid-area: title;
       margin: 0;
-      font-size: 1.7rem;
-      font-weight: 650;
-      letter-spacing: -0.03em;
+      font-size: 0.98rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
     }
     .preview {
-      margin: 0.7rem 0 0;
-      color: var(--quiet);
-      font-size: 0.92rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
+      grid-area: preview;
+      margin: 0.15rem 0 0;
+      color: var(--muted);
+      font-size: 0.75rem;
     }
     .preview-links {
       list-style: none;
-      margin: 0.7rem 0 0;
+      margin: 0.35rem 0 0;
       padding: 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+    }
+    .preview-links a {
+      color: var(--ink);
+      text-decoration: none;
+      border: 1px solid var(--hair);
+      border-radius: 999px;
+      padding: 0.15rem 0.55rem;
+      font-size: 0.72rem;
     }
     .abort {
-      margin-top: 1rem;
+      grid-area: abort;
+      margin: 0;
     }
-    .abort button {
-      border: 2px solid var(--ink);
+    .abort button,
+    .stage-actions button,
+    .tickets button,
+    .device-code button,
+    .cancel-turn button {
+      border: 1px solid var(--hair);
       background: transparent;
       color: var(--ink);
-      padding: 0.35rem 0.85rem;
+      padding: 0.38rem 0.8rem;
       font: inherit;
-      font-size: 0.8rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
+      font-size: 0.78rem;
+      font-weight: 500;
+      border-radius: 999px;
       cursor: pointer;
+    }
+    .abort button:hover,
+    .stage-actions button:hover,
+    .tickets button:hover,
+    .device-code button:hover,
+    .cancel-turn button:hover {
+      background: var(--elevated);
     }
     .stages {
       display: flex;
       flex-wrap: wrap;
-      gap: 0.4rem 1.1rem;
+      gap: 0.35rem;
       list-style: none;
-      margin: 1.4rem 0 0;
-      padding: 0;
-      border-bottom: 1px solid var(--rule);
+      margin: 0.2rem 0 0;
+      padding: 0 0 0.9rem;
     }
     .stages li {
-      padding: 0.35rem 0 0.7rem;
-      color: var(--quiet);
-      font-size: 0.78rem;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
+      padding: 0.22rem 0.65rem;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 500;
+      border-radius: 999px;
     }
     .stages li.open,
     .stages li.current {
       color: var(--ink);
-      border-bottom: 2px solid var(--mark);
-      font-weight: 700;
+      background: var(--elevated);
     }
     .stages li.locked {
       text-decoration: line-through;
+      opacity: 0.55;
     }
     .stage-body {
-      margin-top: 1.6rem;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
     }
     .stage-body h2 {
       margin: 0;
-      font-size: 0.78rem;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
+      font-size: 0.72rem;
+      font-weight: 500;
+      color: var(--muted);
     }
     .tickets {
       list-style: none;
@@ -198,197 +247,243 @@ export function renderFeaturePage(view: FeaturePageView): string {
       align-items: center;
       justify-content: space-between;
       gap: 1rem;
-      border-bottom: 1px solid var(--rule);
+      border-bottom: 1px solid var(--hair);
       padding: 0.7rem 0;
-      font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
-      font-size: 0.95rem;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+      font-size: 0.9rem;
     }
-    .tickets .closed {
-      color: var(--quiet);
-    }
+    .tickets .closed { color: var(--muted); }
     .empty-tickets {
       margin: 1.1rem 0 0;
-      color: var(--quiet);
+      color: var(--muted);
     }
     .stage-actions {
       display: flex;
       flex-wrap: wrap;
-      gap: 0.6rem;
-      margin-top: 1.4rem;
-    }
-    .stage-actions button,
-    .tickets button,
-    .device-code button {
-      border: 2px solid var(--ink);
-      background: var(--ink);
-      color: var(--field);
-      padding: 0.35rem 0.85rem;
-      font: inherit;
-      font-size: 0.8rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      cursor: pointer;
+      gap: 0.5rem;
+      margin-top: 1.2rem;
     }
     .device-code {
-      margin-top: 1.6rem;
-      padding-top: 0.2rem;
+      margin-top: 1.2rem;
+      padding: 1rem 1.1rem;
+      background: var(--elevated);
+      border: 1px solid var(--hair);
+      border-radius: 1.1rem;
     }
     .device-code h2 {
       margin: 0;
       font-size: 0.78rem;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
+      font-weight: 600;
+      color: var(--ink);
     }
-    .device-code p {
-      margin: 0.7rem 0 0;
-    }
+    .device-code p { margin: 0.7rem 0 0; }
     .verification-url {
-      font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
-      font-size: 0.92rem;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+      font-size: 0.88rem;
       overflow-wrap: anywhere;
     }
-    .verification-url a {
-      color: var(--mark);
-    }
+    .verification-url a { color: var(--ink); }
     .user-code {
-      font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
-      font-size: 1.4rem;
-      letter-spacing: 0.12em;
-      font-weight: 650;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+      font-size: 1.35rem;
+      letter-spacing: 0.1em;
+      font-weight: 600;
     }
-    .device-code form {
-      margin-top: 1.1rem;
-    }
+    .device-code form { margin-top: 1rem; }
     .harness {
-      margin-top: 1.4rem;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      margin-top: 0.6rem;
+    }
+    .turns {
+      flex: 1;
+      padding: 0.4rem 0 1.2rem;
     }
     .turn {
-      border-top: 1px solid var(--rule);
-      padding: 1.1rem 0 1.2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+      padding: 0.85rem 0 1.15rem;
     }
     .turn-label {
-      margin: 0;
-      font-size: 0.72rem;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      color: var(--quiet);
-      font-weight: 700;
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+    .turn-user {
+      display: flex;
+      justify-content: flex-end;
     }
     .turn-prompt {
-      margin: 0.4rem 0 0;
+      margin: 0;
+      max-width: min(36rem, 86%);
+      padding: 0.7rem 0.95rem;
+      background: var(--bubble);
+      border-radius: 1.35rem 1.35rem 0.4rem 1.35rem;
       color: var(--ink);
       white-space: pre-wrap;
       overflow-wrap: anywhere;
+      font-size: 0.98rem;
+      line-height: 1.45;
     }
     .turn-work {
-      margin: 0.8rem 0 0;
+      margin: 0;
+      max-width: 38rem;
     }
     .turn-work summary {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.45rem 0.7rem;
       cursor: pointer;
       list-style: none;
+      color: var(--muted);
     }
-    .turn-work summary::-webkit-details-marker {
-      display: none;
+    .turn-work summary::-webkit-details-marker { display: none; }
+    .turn-work summary::before {
+      content: "";
+      width: 0.45rem;
+      height: 0.45rem;
+      border-right: 1.5px solid var(--muted);
+      border-bottom: 1.5px solid var(--muted);
+      transform: rotate(-45deg);
+      transition: transform 0.15s ease;
     }
+    .turn-work[open] summary::before { transform: rotate(45deg); }
     .work-count {
-      color: var(--quiet);
-      font-size: 0.72rem;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      font-weight: 700;
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-weight: 500;
     }
     .work-now {
       display: flex;
       align-items: center;
-      gap: 0.5rem;
-      margin-top: 0.4rem;
-      font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
-      font-size: 0.92rem;
+      gap: 0.45rem;
+      color: var(--live);
+      font-size: 0.82rem;
     }
     .work-now::before {
       content: "";
-      width: 0.5rem;
-      height: 0.5rem;
+      width: 0.42rem;
+      height: 0.42rem;
       flex: none;
       border-radius: 50%;
-      background: var(--mark);
+      background: var(--live);
       animation: work-pulse 1.2s ease-in-out infinite;
     }
     @keyframes work-pulse {
-      50% { opacity: 0.35; }
+      50% { opacity: 0.28; }
     }
     .work-log {
       list-style: none;
-      margin: 0.55rem 0 0;
-      padding: 0;
-      color: var(--quiet);
-      font-size: 0.88rem;
+      margin: 0.45rem 0 0;
+      padding: 0.15rem 0 0.2rem 1.05rem;
+      border-left: 1px solid var(--hair);
+      color: var(--muted);
+      font-size: 0.84rem;
     }
     .work-log li {
-      padding: 0.22rem 0;
+      padding: 0.18rem 0;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
     .work-tool {
-      font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
-      color: var(--ink);
-      font-size: 0.88rem;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+      color: #c8c8cc;
+      font-size: 0.8rem;
     }
-    .work-reasoning {
-      font-style: italic;
-    }
+    .work-reasoning { font-style: italic; }
     .turn-answer {
-      margin: 0.9rem 0 0;
+      margin: 0;
+      max-width: 40rem;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
+      font-size: 1.02rem;
+      line-height: 1.6;
+      font-weight: 400;
     }
-    .prompt {
+    .composer-dock {
       position: sticky;
       bottom: 0;
-      margin-top: 1.2rem;
-      padding-top: 0.8rem;
-      background: var(--field);
+      z-index: 2;
+      margin: auto -0.2rem 0;
+      padding: 0.55rem 0.2rem 1.05rem;
+      background: linear-gradient(180deg, transparent, var(--canvas) 2.1rem);
+    }
+    .prompt {
+      margin: 0;
+    }
+    .composer {
+      display: flex;
+      align-items: flex-end;
+      gap: 0.5rem;
+      padding: 0.5rem 0.5rem 0.5rem 1.05rem;
+      background: var(--elevated);
+      border: 1px solid var(--hair);
+      border-radius: 1.7rem;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
     }
     .prompt textarea {
       display: block;
+      flex: 1;
       width: 100%;
-      min-height: 6.5rem;
-      border: 2px solid var(--ink);
-      background: var(--field);
-      color: var(--ink);
-      padding: 0.6rem 0.7rem;
-      font: inherit;
-      resize: vertical;
-    }
-    .prompt-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.6rem;
-      margin-top: 0.7rem;
-    }
-    .prompt button,
-    .cancel-turn button {
-      border: 2px solid var(--ink);
-      background: var(--ink);
-      color: var(--field);
-      padding: 0.35rem 0.85rem;
-      font: inherit;
-      font-size: 0.8rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      cursor: pointer;
-    }
-    .prompt button:disabled {
-      opacity: 0.45;
-      cursor: not-allowed;
-    }
-    .cancel-turn button {
+      min-height: 1.55rem;
+      max-height: 12rem;
+      border: 0;
       background: transparent;
       color: var(--ink);
+      padding: 0.45rem 0;
+      font: inherit;
+      font-size: 1rem;
+      line-height: 1.45;
+      resize: none;
+      outline: none;
+    }
+    .prompt textarea::placeholder { color: var(--muted); }
+    .prompt-actions {
+      display: flex;
+      align-items: flex-end;
+      gap: 0.4rem;
+    }
+    .prompt button[type="submit"] {
+      flex: none;
+      width: 2.15rem;
+      height: 2.15rem;
+      border: 0;
+      border-radius: 999px;
+      background: var(--send);
+      color: transparent;
+      font-size: 0;
+      cursor: pointer;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230a0a0b' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M12 19V5'/><path d='M5 12l7-7 7 7'/></svg>");
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: 1.05rem;
+    }
+    .prompt button[type="submit"]:disabled {
+      opacity: 0.28;
+      cursor: not-allowed;
+    }
+    .cancel-turn {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 0.55rem;
     }
     .error {
-      margin: 1.1rem 0 0;
+      margin: 0.4rem 0 0;
       color: var(--alert);
+      font-size: 0.92rem;
+    }
+    @media (max-width: 640px) {
+      main { padding: 0 0.85rem; }
+      .chrome { margin: 0 -0.85rem; padding: 0.75rem 0.85rem 0.65rem; }
+      .turn-prompt { max-width: 92%; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .work-now::before { animation: none; }
     }
   </style>
 </head>
@@ -438,13 +533,17 @@ function renderHarness(featureHref: string, slot: FeatureSlot): string {
   const turns = groupSlotTurns(slot.events);
   return `<div class="harness">
       <div class="turns">${turns.map((turn, index) => renderTurn(turn, slot.inFlight && index === turns.length - 1)).join("")}</div>
+      <div class="composer-dock">
       <form class="prompt" method="post" action="${escapeHtml(`${featureHref}/turns`)}">
-        <textarea name="prompt"${disabled}>${escapeHtml(slot.prompt)}</textarea>
-        <div class="prompt-actions">
-          <button type="submit"${disabled}>Send</button>
-          ${cancel}
+        <div class="composer">
+          <textarea name="prompt"${disabled}>${escapeHtml(slot.prompt)}</textarea>
+          <div class="prompt-actions">
+            <button type="submit"${disabled}>Send</button>
+          </div>
         </div>
       </form>
+      ${cancel}
+      </div>
     </div>
     <script>
       (() => {
@@ -464,7 +563,7 @@ function renderHarness(featureHref: string, slot: FeatureSlot): string {
           }
           if (event.kind === "turn_ended") {
             inFlight = false;
-            if (box) { box.disabled = false; box.value = ""; }
+            if (box) { box.disabled = false; box.value = ""; grow(); }
             if (send) send.disabled = false;
             if (cancel) cancel.remove();
           }
@@ -554,9 +653,24 @@ function renderHarness(featureHref: string, slot: FeatureSlot): string {
         function renderTurns(turns, live) {
           return turns.map((turn, index) => renderTurn(turn, live && index === turns.length - 1)).join("");
         }
+        function grow() {
+          if (!box) return;
+          box.style.height = "auto";
+          box.style.height = Math.min(box.scrollHeight, 192) + "px";
+        }
+        if (box) {
+          grow();
+          box.addEventListener("input", grow);
+          box.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
+              event.preventDefault();
+              if (!inFlight && form) form.requestSubmit();
+            }
+          });
+        }
         function renderTurn(turn, live) {
           const prompt = turn.prompt
-            ? "<p class=\\"turn-label\\">You</p><p class=\\"turn-prompt\\">" + esc(turn.prompt) + "</p>"
+            ? "<p class=\\"turn-label\\">You</p><div class=\\"turn-user\\"><p class=\\"turn-prompt\\">" + esc(turn.prompt) + "</p></div>"
             : "";
           const current = live && !turn.answer && turn.work.length
             ? turn.work[turn.work.length - 1]
@@ -709,7 +823,7 @@ function betterToolTitle(current: string, next: string): string {
 
 function renderTurn(turn: SlotTurn, live: boolean): string {
   const prompt = turn.prompt
-    ? `<p class="turn-label">You</p><p class="turn-prompt">${escapeHtml(turn.prompt)}</p>`
+    ? `<p class="turn-label">You</p><div class="turn-user"><p class="turn-prompt">${escapeHtml(turn.prompt)}</p></div>`
     : "";
   const current = live && !turn.answer && turn.work.length > 0 ? turn.work.at(-1) : undefined;
   const currentLabel = current
