@@ -70,6 +70,8 @@ export type AddProjectResult =
 
 export type ReplacePatResult = { ok: true } | { ok: false; reason: string };
 
+export type RemoveProjectResult = { ok: true } | { ok: false; reason: string };
+
 export type StageId = "grill-with-docs" | "to-spec" | "to-tickets" | "implement";
 
 export type StageStatus = "upcoming" | "open" | "closed" | "locked";
@@ -115,6 +117,7 @@ export type Platform = {
   listProjects(): Project[];
   addProject(input: string, pat?: string): Promise<AddProjectResult>;
   replaceProjectPat(owner: string, name: string, pat: string): Promise<ReplacePatResult>;
+  removeProject(owner: string, name: string): Promise<RemoveProjectResult>;
   listFeatures(owner: string, name: string): Feature[];
   getFeature(owner: string, name: string, featureName: string): Feature | undefined;
   createFeature(owner: string, name: string, featureName: string): Promise<CreateFeatureResult>;
@@ -173,7 +176,7 @@ export function createPlatform(options: {
   const recordsDir = join(options.home, STATE_PROJECTS_DIR);
   mkdirSync(recordsDir, { recursive: true });
 
-  return {
+  const platform: Platform = {
     listProjects() {
       return loadProjects(recordsDir);
     },
@@ -224,6 +227,30 @@ export function createPlatform(options: {
         return check;
       }
       writePat(recordsDir, existing.owner, existing.name, credential);
+      return { ok: true };
+    },
+    async removeProject(owner, name) {
+      const project = findProject(loadProjects(recordsDir), owner, name);
+      if (!project) {
+        return { ok: false, reason: `Project ${owner}/${name} does not exist.` };
+      }
+      for (const feature of loadFeatures(options.home, recordsDir, project)) {
+        const aborted = await platform.abortFeature(project.owner, project.name, feature.name);
+        if (!aborted.ok) {
+          return aborted;
+        }
+      }
+      rmSync(join(options.home, WORKTREES_DIR, project.owner, project.name), {
+        recursive: true,
+        force: true,
+      });
+      rmSync(join(options.home, CLONES_DIR, project.owner, project.name), {
+        recursive: true,
+        force: true,
+      });
+      rmSync(join(recordsDir, project.owner, `${project.name}.pat`), { force: true });
+      rmSync(join(recordsDir, project.owner, project.name), { recursive: true, force: true });
+      rmSync(join(recordsDir, project.owner, `${project.name}.json`), { force: true });
       return { ok: true };
     },
     listFeatures(owner, name) {
@@ -431,6 +458,7 @@ export function createPlatform(options: {
       return { ok: true, feature: viewFeature(options.home, project, next) };
     },
   };
+  return platform;
 }
 
 function writePat(recordsDir: string, owner: string, name: string, credential: string): void {

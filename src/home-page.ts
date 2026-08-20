@@ -15,6 +15,7 @@ export function renderHomePage(view: HomePageView): string {
             const identity = `${escapeHtml(project.owner)}/${escapeHtml(project.name)}`;
             const href = `/projects/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}`;
             const action = `${href}/pat`;
+            const removeAction = `${href}/remove`;
             const fieldId = `pat-${encodeURIComponent(project.owner)}-${encodeURIComponent(project.name)}`;
             return `<li>
               <a class="identity" href="${escapeHtml(href)}">${identity}</a>
@@ -22,6 +23,9 @@ export function renderHomePage(view: HomePageView): string {
                 <label for="${escapeHtml(fieldId)}">Replace PAT</label>
                 <input id="${escapeHtml(fieldId)}" name="pat" type="password" autocomplete="off" spellcheck="false" placeholder="Fine-grained PAT">
                 <button type="submit">Replace PAT</button>
+              </form>
+              <form class="remove-project" method="post" action="${escapeHtml(removeAction)}">
+                <button type="submit">Remove</button>
               </form>
             </li>`;
           })
@@ -152,6 +156,20 @@ export function renderHomePage(view: HomePageView): string {
     .rotate-pat input {
       margin: 0.45rem 0 0.7rem;
       padding: 0.45rem 0.15rem;
+    }
+    .remove-project {
+      margin-top: 0.7rem;
+    }
+    .remove-project button {
+      border: 2px solid var(--ink);
+      background: transparent;
+      color: var(--ink);
+      padding: 0.35rem 0.85rem;
+      font: inherit;
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
     }
     .error {
       margin: 1.1rem 0 0;

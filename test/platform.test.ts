@@ -13,6 +13,8 @@ import {
   type StageId,
 } from "../src/platform.ts";
 import { renderFeaturePage } from "../src/feature-page.ts";
+import { renderHomePage } from "../src/home-page.ts";
+import { renderProjectPage } from "../src/project-page.ts";
 
 function newHome(): string {
   return mkdtempSync(join(tmpdir(), "platform-home-"));
@@ -821,6 +823,111 @@ describe("Platform", () => {
     assert.deepEqual(aborted, { ok: false, reason: "Feature login-form does not exist." });
   });
 
+  it("removes a Project by deleting its record, PAT, clone, worktrees, and Feature records", async () => {
+    const home = newHome();
+    const clones: GitCloneRequest[] = [];
+    const platform = platformWithGit(home, succeedingGit((request) => clones.push(request)));
+    const added = await platform.addProject("https://github.com/acme/widgets", "github_pat_widgets");
+    assert.equal(added.ok, true);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    assert.equal((await platform.createFeature("acme", "widgets", "billing")).ok, true);
+    const widgetsClone = clones[0]!.dest;
+    const loginWorktree = join(home, "worktrees", "acme", "widgets", "login-form");
+    const billingWorktree = join(home, "worktrees", "acme", "widgets", "billing");
+    assert.equal(existsSync(widgetsClone), true);
+    assert.equal(existsSync(loginWorktree), true);
+
+    const removed = await platform.removeProject("acme", "widgets");
+
+    assert.deepEqual(removed, { ok: true });
+    assert.deepEqual(platform.listProjects(), []);
+    assert.deepEqual(platform.listFeatures("acme", "widgets"), []);
+    assert.equal(platform.getFeature("acme", "widgets", "login-form"), undefined);
+    assert.equal(platform.getFeature("acme", "widgets", "billing"), undefined);
+    assert.equal(existsSync(widgetsClone), false);
+    assert.equal(existsSync(loginWorktree), false);
+    assert.equal(existsSync(billingWorktree), false);
+
+    const reused = await platform.addProject("https://github.com/acme/widgets");
+    assert.equal(reused.ok, true);
+    assert.equal("credential" in clones[1]!, false);
+    const recreated = await platform.createFeature("acme", "widgets", "login-form");
+    assert.equal(recreated.ok, true);
+    assert.equal(platform.getFeature("acme", "widgets", "login-form")?.name, "login-form");
+  });
+
+  it("drops Features of a removed Project and leaves other Projects in place", async () => {
+    const home = newHome();
+    const platform = platformWithGit(home, succeedingGit());
+    assert.equal((await platform.addProject("https://github.com/acme/widgets")).ok, true);
+    assert.equal((await platform.addProject("https://github.com/other/sprockets")).ok, true);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    assert.equal((await platform.createFeature("other", "sprockets", "login-form")).ok, true);
+    const sprocketsClone = join(home, "clones", "other", "sprockets");
+    const sprocketsWorktree = join(home, "worktrees", "other", "sprockets", "login-form");
+
+    const removed = await platform.removeProject("acme", "widgets");
+
+    assert.deepEqual(removed, { ok: true });
+    assert.deepEqual(platform.listProjects(), [{ owner: "other", name: "sprockets" }]);
+    assert.deepEqual(platform.listFeatures("acme", "widgets").map((feature) => feature.name), []);
+    assert.equal(platform.getFeature("acme", "widgets", "login-form"), undefined);
+    assert.deepEqual(
+      platform.listFeatures("other", "sprockets").map((feature) => feature.name),
+      ["login-form"],
+    );
+    assert.equal(platform.getFeature("other", "sprockets", "login-form")?.name, "login-form");
+    assert.equal(existsSync(sprocketsClone), true);
+    assert.equal(existsSync(sprocketsWorktree), true);
+  });
+
+  it("no longer lists a removed Project from a second Platform on the same home", async () => {
+    const home = newHome();
+    const first = platformWithGit(home, succeedingGit());
+    assert.equal((await first.addProject("https://github.com/acme/widgets")).ok, true);
+    assert.equal((await first.addProject("https://github.com/other/sprockets")).ok, true);
+    assert.equal((await first.createFeature("acme", "widgets", "login-form")).ok, true);
+    assert.equal((await first.createFeature("other", "sprockets", "login-form")).ok, true);
+    assert.equal((await first.removeProject("acme", "widgets")).ok, true);
+
+    const second = platformWithGit(home, unusedGit("should not clone or add a worktree"));
+    assert.deepEqual(second.listProjects(), [{ owner: "other", name: "sprockets" }]);
+    assert.deepEqual(second.listFeatures("acme", "widgets"), []);
+    assert.equal(second.getFeature("acme", "widgets", "login-form"), undefined);
+    assert.deepEqual(
+      second.listFeatures("other", "sprockets").map((feature) => feature.name),
+      ["login-form"],
+    );
+  });
+
+  it("keeps the Project when remove cannot tear down a Feature worktree", async () => {
+    const home = newHome();
+    const platform = platformWithGit(home, {
+      ...succeedingGit(),
+      async removeFeatureWorktree() {
+        return { ok: false, reason: "worktree is locked" };
+      },
+    });
+    assert.equal((await platform.addProject("https://github.com/acme/widgets")).ok, true);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const clone = join(home, "clones", "acme", "widgets");
+    const worktree = join(home, "worktrees", "acme", "widgets", "login-form");
+
+    const removed = await platform.removeProject("acme", "widgets");
+
+    assert.deepEqual(removed, { ok: false, reason: "worktree is locked" });
+    assert.deepEqual(platform.listProjects(), [{ owner: "acme", name: "widgets" }]);
+    assert.equal(platform.getFeature("acme", "widgets", "login-form")?.name, "login-form");
+    assert.equal(existsSync(clone), true);
+    assert.equal(existsSync(worktree), true);
+  });
+
+  it("refuses to remove a Project that does not exist", async () => {
+    const platform = createPlatform({ home: newHome(), adapters: emptyAdapters() });
+    const removed = await platform.removeProject("acme", "widgets");
+    assert.deepEqual(removed, { ok: false, reason: "Project acme/widgets does not exist." });
+  });
+
   it("lets the Operator close grill-with-docs without advancing, even when a spec or Ticket file appears", async () => {
     const { home, platform } = await platformWithProject();
     const created = await platform.createFeature("acme", "widgets", "login-form");
@@ -1048,5 +1155,21 @@ describe("Platform", () => {
     const html = renderFeaturePage({ feature: platform.getFeature("acme", "widgets", "login-form")! });
     assert.match(html, />Reopen</);
     assert.match(html, /Start to-spec/);
+  });
+
+  it("renders Remove on Home and on the Project screen", async () => {
+    const { platform } = await platformWithProject();
+    const project = { owner: "acme", name: "widgets" };
+
+    const home = renderHomePage({ projects: platform.listProjects() });
+    assert.match(home, /action="\/projects\/acme\/widgets\/remove"/);
+    assert.match(home, />Remove</);
+
+    const page = renderProjectPage({
+      project,
+      features: platform.listFeatures("acme", "widgets"),
+    });
+    assert.match(page, /action="\/projects\/acme\/widgets\/remove"/);
+    assert.match(page, />Remove</);
   });
 });

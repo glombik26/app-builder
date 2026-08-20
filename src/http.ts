@@ -58,6 +58,26 @@ async function handleRequest(
     return;
   }
 
+  const remove = path.match(/^\/projects\/([^/]+)\/([^/]+)\/remove$/);
+  if (request.method === "POST" && remove) {
+    const owner = decodeURIComponent(remove[1]!);
+    const name = decodeURIComponent(remove[2]!);
+    const project = findProject(platform, owner, name);
+    const result = await platform.removeProject(owner, name);
+    if (result.ok) {
+      response.writeHead(303, { location: "/" });
+      response.end();
+      return;
+    }
+    if (!project) {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+      return;
+    }
+    sendProject(response, platform, project, { error: result.reason });
+    return;
+  }
+
   const rotate = path.match(/^\/projects\/([^/]+)\/([^/]+)\/pat$/);
   if (request.method === "POST" && rotate) {
     const form = await readForm(request);

@@ -9,7 +9,9 @@ export type ProjectPageView = {
 
 export function renderProjectPage(view: ProjectPageView): string {
   const identity = `${escapeHtml(view.project.owner)}/${escapeHtml(view.project.name)}`;
-  const featuresHref = `/projects/${encodeURIComponent(view.project.owner)}/${encodeURIComponent(view.project.name)}/features`;
+  const projectHref = `/projects/${encodeURIComponent(view.project.owner)}/${encodeURIComponent(view.project.name)}`;
+  const featuresHref = `${projectHref}/features`;
+  const removeAction = `${projectHref}/remove`;
   const body =
     view.features.length === 0
       ? `<p class="empty">No Features.</p>`
@@ -140,6 +142,20 @@ export function renderProjectPage(view: ProjectPageView): string {
       text-transform: uppercase;
       cursor: pointer;
     }
+    .remove-project {
+      margin-top: 1rem;
+    }
+    .remove-project button {
+      border: 2px solid var(--ink);
+      background: transparent;
+      color: var(--ink);
+      padding: 0.35rem 0.85rem;
+      font: inherit;
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
     .error {
       margin: 1.1rem 0 0;
       color: var(--alert);
@@ -151,6 +167,9 @@ export function renderProjectPage(view: ProjectPageView): string {
     <a class="home" href="/">Projects</a>
     <header>
       <h1><span class="mark" aria-hidden="true"></span>${identity}</h1>
+      <form class="remove-project" method="post" action="${escapeHtml(removeAction)}">
+        <button type="submit">Remove</button>
+      </form>
     </header>
     ${error}
     ${body}
