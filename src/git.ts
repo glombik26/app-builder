@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-import type { GitAdapter, GitCloneResult } from "./platform.ts";
+import type { GitAdapter, GitCloneResult, GitWorktreeStatus } from "./platform.ts";
 
 export function createGitAdapter(): GitAdapter {
   return {
@@ -58,8 +58,9 @@ export function createGitAdapter(): GitAdapter {
       if (!added.ok) {
         rmSync(worktree, { recursive: true, force: true });
         await runGit(["-C", clone, "branch", "-D", branch]);
+        return added;
       }
-      return added;
+      return { ok: true };
     },
     async removeFeatureWorktree({ clone, branch, worktree }) {
       const removed = await runGit(["-C", clone, "worktree", "remove", "--force", worktree]);
@@ -70,6 +71,13 @@ export function createGitAdapter(): GitAdapter {
         return { ok: false, reason: removed.reason };
       }
       return { ok: true };
+    },
+    async worktreeStatus({ worktree }): Promise<GitWorktreeStatus> {
+      const status = await runGit(["-C", worktree, "status", "--porcelain"]);
+      if (!status.ok) {
+        return status;
+      }
+      return { ok: true, dirty: status.stdout.trim().length > 0 };
     },
   };
 }
@@ -112,12 +120,16 @@ function patCloneReason(reason: string): string {
   return reason;
 }
 
-function runGit(args: string[]): Promise<GitCloneResult> {
+function runGit(args: string[]): Promise<{ ok: true; stdout: string } | { ok: false; reason: string }> {
   return new Promise((resolve) => {
     const child = spawn("git", args, {
       env: gitEnv(),
     });
+    const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout.push(chunk);
+    });
     child.stderr.on("data", (chunk: Buffer) => {
       stderr.push(chunk);
     });
@@ -126,7 +138,7 @@ function runGit(args: string[]): Promise<GitCloneResult> {
     });
     child.on("close", (code) => {
       if (code === 0) {
-        resolve({ ok: true });
+        resolve({ ok: true, stdout: Buffer.concat(stdout).toString("utf8") });
         return;
       }
       const detail = Buffer.concat(stderr).toString("utf8").trim().split("\n").at(-1) ?? "";

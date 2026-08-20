@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -9,7 +9,10 @@ import {
   type GitAdapter,
   type GitCloneRequest,
   type GitWorktreeRequest,
+  type Platform,
+  type StageId,
 } from "../src/platform.ts";
+import { renderFeaturePage } from "../src/feature-page.ts";
 
 function newHome(): string {
   return mkdtempSync(join(tmpdir(), "platform-home-"));
@@ -26,6 +29,7 @@ function succeedingGit(
   onClone?: (request: GitCloneRequest) => void,
   onAddWorktree?: (request: GitWorktreeRequest) => void,
   onRemoveWorktree?: (request: GitWorktreeRequest) => void,
+  isDirty?: () => boolean,
 ): GitAdapter {
   return {
     async clonePublic(request) {
@@ -47,6 +51,9 @@ function succeedingGit(
       onRemoveWorktree?.(request);
       rmSync(request.worktree, { recursive: true, force: true });
       return { ok: true };
+    },
+    async worktreeStatus() {
+      return { ok: true, dirty: isDirty?.() ?? false };
     },
   };
 }
@@ -84,10 +91,13 @@ function unusedGit(reason = "should not clone"): GitAdapter {
     async removeFeatureWorktree() {
       return { ok: false, reason };
     },
+    async worktreeStatus() {
+      return { ok: false, reason };
+    },
   };
 }
 
-async function platformWithProject(home = newHome()) {
+async function platformWithProject(home = newHome(), isDirty?: () => boolean) {
   const clones: GitCloneRequest[] = [];
   const worktrees: GitWorktreeRequest[] = [];
   const removed: GitWorktreeRequest[] = [];
@@ -97,11 +107,39 @@ async function platformWithProject(home = newHome()) {
       (request) => clones.push(request),
       (request) => worktrees.push(request),
       (request) => removed.push(request),
+      isDirty,
     ),
   );
   const added = await platform.addProject("https://github.com/acme/widgets");
   assert.equal(added.ok, true);
   return { home, platform, clones, worktrees, removed };
+}
+
+const STAGE_ORDER: StageId[] = ["grill-with-docs", "to-spec", "to-tickets", "implement"];
+
+async function reachStage(
+  platform: Platform,
+  featureName: string,
+  target: StageId,
+): Promise<void> {
+  for (const stage of STAGE_ORDER) {
+    if (stage === target) {
+      return;
+    }
+    const closed = await platform.closeStage("acme", "widgets", featureName, stage);
+    assert.equal(closed.ok, true, closed.ok ? undefined : closed.reason);
+    const next = STAGE_ORDER[STAGE_ORDER.indexOf(stage) + 1];
+    const started = await platform.startStage("acme", "widgets", featureName, next!);
+    assert.equal(started.ok, true, started.ok ? undefined : started.reason);
+  }
+}
+
+function writeHandoff(worktree: string, tickets: string[] = [], spec = "# spec\n"): void {
+  mkdirSync(join(worktree, ".scratch", "issues"), { recursive: true });
+  writeFileSync(join(worktree, ".scratch", "spec.md"), spec);
+  for (const ticket of tickets) {
+    writeFileSync(join(worktree, ".scratch", "issues", ticket), `# ${ticket}\n`);
+  }
 }
 
 describe("Platform", () => {
@@ -650,6 +688,13 @@ describe("Platform", () => {
       project: { owner: "acme", name: "widgets" },
       stages: ["grill-with-docs", "to-spec", "to-tickets", "implement"],
       openStage: "grill-with-docs",
+      stageStatuses: {
+        "grill-with-docs": "open",
+        "to-spec": "upcoming",
+        "to-tickets": "upcoming",
+        implement: "upcoming",
+      },
+      tickets: [],
       preview: { status: "none", links: [] },
     });
     assert.deepEqual(platform.getFeature("acme", "widgets", "login-form"), created.feature);
@@ -774,5 +819,234 @@ describe("Platform", () => {
     const { platform } = await platformWithProject();
     const aborted = await platform.abortFeature("acme", "widgets", "login-form");
     assert.deepEqual(aborted, { ok: false, reason: "Feature login-form does not exist." });
+  });
+
+  it("lets the Operator close grill-with-docs without advancing, even when a spec or Ticket file appears", async () => {
+    const { home, platform } = await platformWithProject();
+    const created = await platform.createFeature("acme", "widgets", "login-form");
+    assert.equal(created.ok, true);
+
+    writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["login.md"]);
+
+    const closed = await platform.closeStage("acme", "widgets", "login-form", "grill-with-docs");
+    assert.equal(closed.ok, true);
+    if (!closed.ok) {
+      return;
+    }
+
+    assert.equal(closed.feature.openStage, "grill-with-docs");
+    assert.deepEqual(closed.feature.stageStatuses, {
+      "grill-with-docs": "closed",
+      "to-spec": "upcoming",
+      "to-tickets": "upcoming",
+      implement: "upcoming",
+    });
+    assert.deepEqual(platform.getFeature("acme", "widgets", "login-form")?.stageStatuses, {
+      "grill-with-docs": "closed",
+      "to-spec": "upcoming",
+      "to-tickets": "upcoming",
+      implement: "upcoming",
+    });
+  });
+
+  it("lets the Operator reopen a closed Stage until the next Stage has started", async () => {
+    const { platform } = await platformWithProject();
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    assert.equal((await platform.closeStage("acme", "widgets", "login-form", "grill-with-docs")).ok, true);
+
+    const reopened = await platform.reopenStage("acme", "widgets", "login-form", "grill-with-docs");
+    assert.equal(reopened.ok, true);
+    if (!reopened.ok) {
+      return;
+    }
+    assert.equal(reopened.feature.openStage, "grill-with-docs");
+    assert.equal(reopened.feature.stageStatuses["grill-with-docs"], "open");
+    assert.equal(reopened.feature.stageStatuses["to-spec"], "upcoming");
+  });
+
+  it("locks a closed Stage once the next Stage has started; abort is the only way back", async () => {
+    const { home, platform } = await platformWithProject();
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    assert.equal((await platform.closeStage("acme", "widgets", "login-form", "grill-with-docs")).ok, true);
+
+    const started = await platform.startStage("acme", "widgets", "login-form", "to-spec");
+    assert.equal(started.ok, true);
+    if (!started.ok) {
+      return;
+    }
+    assert.equal(started.feature.openStage, "to-spec");
+    assert.equal(started.feature.stageStatuses["grill-with-docs"], "locked");
+    assert.equal(started.feature.stageStatuses["to-spec"], "open");
+
+    const reopen = await platform.reopenStage("acme", "widgets", "login-form", "grill-with-docs");
+    assert.deepEqual(reopen, {
+      ok: false,
+      reason: "Stage grill-with-docs is locked because the next Stage has started.",
+    });
+    assert.equal(platform.getFeature("acme", "widgets", "login-form")?.stageStatuses["grill-with-docs"], "locked");
+
+    const aborted = await platform.abortFeature("acme", "widgets", "login-form");
+    assert.deepEqual(aborted, { ok: true });
+    assert.equal(platform.getFeature("acme", "widgets", "login-form"), undefined);
+    const reused = await platform.createFeature("acme", "widgets", "login-form");
+    assert.equal(reused.ok, true);
+    assert.equal(reused.ok && reused.feature.openStage, "grill-with-docs");
+    assert.equal(existsSync(join(home, "worktrees", "acme", "widgets", "login-form")), true);
+  });
+
+  it("refuses to start the next Stage before the current one is closed", async () => {
+    const { platform } = await platformWithProject();
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+
+    const started = await platform.startStage("acme", "widgets", "login-form", "to-spec");
+    assert.deepEqual(started, {
+      ok: false,
+      reason: "Stage to-spec cannot start until grill-with-docs is closed.",
+    });
+    assert.equal(platform.getFeature("acme", "widgets", "login-form")?.openStage, "grill-with-docs");
+  });
+
+  it("keeps closed, reopened, and locked Stages on a second Platform on the same home", async () => {
+    const home = newHome();
+    const first = platformWithGit(home, succeedingGit());
+    assert.equal((await first.addProject("https://github.com/acme/widgets")).ok, true);
+    assert.equal((await first.createFeature("acme", "widgets", "login-form")).ok, true);
+    assert.equal((await first.closeStage("acme", "widgets", "login-form", "grill-with-docs")).ok, true);
+    assert.equal((await first.startStage("acme", "widgets", "login-form", "to-spec")).ok, true);
+
+    const second = platformWithGit(home, unusedGit("should not clone or add a worktree"));
+    const feature = second.getFeature("acme", "widgets", "login-form");
+    assert.equal(feature?.openStage, "to-spec");
+    assert.equal(feature?.stageStatuses["grill-with-docs"], "locked");
+    assert.equal(feature?.stageStatuses["to-spec"], "open");
+  });
+
+  it("shows implement as a Ticket shell from the worktree handoff, including empty", async () => {
+    const { home, platform } = await platformWithProject();
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    await reachStage(platform, "login-form", "implement");
+
+    const empty = platform.getFeature("acme", "widgets", "login-form");
+    assert.equal(empty?.openStage, "implement");
+    assert.deepEqual(empty?.tickets, []);
+
+    writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["billing.md", "login.md"]);
+    const listed = platform.getFeature("acme", "widgets", "login-form");
+    assert.deepEqual(listed?.tickets, [
+      { name: "billing.md", closedInImplement: false },
+      { name: "login.md", closedInImplement: false },
+    ]);
+  });
+
+  it("refuses implement close when the worktree is dirty", async () => {
+    let dirty = true;
+    const { platform } = await platformWithProject(newHome(), () => dirty);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    await reachStage(platform, "login-form", "implement");
+
+    const refused = await platform.closeStage("acme", "widgets", "login-form", "implement");
+    assert.deepEqual(refused, {
+      ok: false,
+      reason: "implement close is refused because the worktree is dirty.",
+    });
+    assert.equal(platform.getFeature("acme", "widgets", "login-form")?.stageStatuses.implement, "open");
+
+    dirty = false;
+    const closed = await platform.closeStage("acme", "widgets", "login-form", "implement");
+    assert.equal(closed.ok, true);
+    assert.equal(closed.ok && closed.feature.stageStatuses.implement, "closed");
+  });
+
+  it("refuses implement close while a Ticket is not closed-in-implement, and allows it when every Ticket is closed and the tree is clean", async () => {
+    const { home, platform } = await platformWithProject();
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["login.md", "billing.md"]);
+    await reachStage(platform, "login-form", "implement");
+
+    const openTickets = await platform.closeStage("acme", "widgets", "login-form", "implement");
+    assert.deepEqual(openTickets, {
+      ok: false,
+      reason: "implement close is refused because a Ticket is not closed-in-implement.",
+    });
+
+    const login = await platform.closeTicket("acme", "widgets", "login-form", "login.md");
+    assert.equal(login.ok, true);
+    const stillOpen = await platform.closeStage("acme", "widgets", "login-form", "implement");
+    assert.deepEqual(stillOpen, {
+      ok: false,
+      reason: "implement close is refused because a Ticket is not closed-in-implement.",
+    });
+
+    const billing = await platform.closeTicket("acme", "widgets", "login-form", "billing.md");
+    assert.equal(billing.ok, true);
+    if (!billing.ok) {
+      return;
+    }
+    assert.deepEqual(billing.feature.tickets, [
+      { name: "billing.md", closedInImplement: true },
+      { name: "login.md", closedInImplement: true },
+    ]);
+
+    const closed = await platform.closeStage("acme", "widgets", "login-form", "implement");
+    assert.equal(closed.ok, true);
+    assert.equal(closed.ok && closed.feature.stageStatuses.implement, "closed");
+  });
+
+  it("allows implement close when the Ticket list is empty and the worktree is clean", async () => {
+    const { platform } = await platformWithProject();
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    await reachStage(platform, "login-form", "implement");
+
+    const closed = await platform.closeStage("acme", "widgets", "login-form", "implement");
+    assert.equal(closed.ok, true);
+    assert.equal(closed.ok && closed.feature.stageStatuses.implement, "closed");
+    assert.deepEqual(closed.ok ? closed.feature.tickets : undefined, []);
+  });
+
+  it("keeps closed-in-implement as a Platform fact on a second Platform on the same home", async () => {
+    const home = newHome();
+    const first = platformWithGit(home, succeedingGit());
+    assert.equal((await first.addProject("https://github.com/acme/widgets")).ok, true);
+    assert.equal((await first.createFeature("acme", "widgets", "login-form")).ok, true);
+    writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["login.md"]);
+    await reachStage(first, "login-form", "implement");
+    assert.equal((await first.closeTicket("acme", "widgets", "login-form", "login.md")).ok, true);
+
+    const second = platformWithGit(home, unusedGit("should not clone or add a worktree"));
+    assert.deepEqual(second.getFeature("acme", "widgets", "login-form")?.tickets, [
+      { name: "login.md", closedInImplement: true },
+    ]);
+  });
+
+  it("renders a stage-led Feature screen with no iframe, git-diff panel, environment dashboard, or API console", async () => {
+    const { home, platform } = await platformWithProject();
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["login.md"]);
+    await reachStage(platform, "login-form", "implement");
+    const feature = platform.getFeature("acme", "widgets", "login-form");
+    assert.ok(feature);
+
+    const html = renderFeaturePage({ feature });
+    assert.match(html, /<ol class="stages">/);
+    assert.match(html, /grill-with-docs/);
+    assert.match(html, /to-spec/);
+    assert.match(html, /to-tickets/);
+    assert.match(html, /implement/);
+    assert.match(html, /login\.md/);
+    assert.match(html, />Close</);
+    assert.match(html, /Close ticket/);
+    assert.equal(html.includes("<iframe"), false);
+    assert.equal(/git[\s-]*diff/i.test(html), false);
+    assert.equal(/environment dashboard/i.test(html), false);
+    assert.equal(/api console/i.test(html), false);
+  });
+
+  it("renders Reopen and Start next after the Operator closes a Stage", async () => {
+    const { platform } = await platformWithProject();
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    assert.equal((await platform.closeStage("acme", "widgets", "login-form", "grill-with-docs")).ok, true);
+    const html = renderFeaturePage({ feature: platform.getFeature("acme", "widgets", "login-form")! });
+    assert.match(html, />Reopen</);
+    assert.match(html, /Start to-spec/);
   });
 });

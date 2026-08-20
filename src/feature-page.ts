@@ -1,4 +1,4 @@
-import type { Feature } from "./platform.ts";
+import type { Feature, StageId } from "./platform.ts";
 
 export type FeaturePageView = {
   feature: Feature;
@@ -9,7 +9,8 @@ export function renderFeaturePage(view: FeaturePageView): string {
   const feature = view.feature;
   const identity = `${escapeHtml(feature.project.owner)}/${escapeHtml(feature.project.name)}`;
   const projectHref = `/projects/${encodeURIComponent(feature.project.owner)}/${encodeURIComponent(feature.project.name)}`;
-  const abortAction = `${projectHref}/features/${encodeURIComponent(feature.name)}/abort`;
+  const featureHref = `${projectHref}/features/${encodeURIComponent(feature.name)}`;
+  const abortAction = `${featureHref}/abort`;
   const links =
     feature.preview.links.length === 0
       ? ""
@@ -25,10 +26,31 @@ export function renderFeaturePage(view: FeaturePageView): string {
     : "";
   const rail = feature.stages
     .map((stage) => {
-      const open = stage === feature.openStage ? ` class="open"` : "";
-      return `<li${open}>${escapeHtml(stage)}</li>`;
+      const classes: string[] = [feature.stageStatuses[stage]];
+      if (stage === feature.openStage) {
+        classes.push("current");
+      }
+      return `<li class="${classes.join(" ")}">${escapeHtml(stage)}</li>`;
     })
     .join("");
+  const openStatus = feature.stageStatuses[feature.openStage];
+  const next = nextStage(feature);
+  const actions: string[] = [];
+  if (openStatus === "open") {
+    actions.push(stageForm(featureHref, feature.openStage, "close", "Close"));
+  }
+  if (openStatus === "closed") {
+    actions.push(stageForm(featureHref, feature.openStage, "reopen", "Reopen"));
+    if (next) {
+      actions.push(stageForm(featureHref, next, "start", `Start ${next}`));
+    }
+  }
+  const tickets =
+    feature.openStage === "implement"
+      ? renderTickets(feature, featureHref, openStatus === "open")
+      : "";
+  const stageActions =
+    actions.length === 0 ? "" : `<div class="stage-actions">${actions.join("")}</div>`;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -130,10 +152,14 @@ export function renderFeaturePage(view: FeaturePageView): string {
       letter-spacing: 0.14em;
       text-transform: uppercase;
     }
-    .stages li.open {
+    .stages li.open,
+    .stages li.current {
       color: var(--ink);
       border-bottom: 2px solid var(--mark);
       font-weight: 700;
+    }
+    .stages li.locked {
+      text-decoration: line-through;
     }
     .stage-body {
       margin-top: 1.6rem;
@@ -143,6 +169,46 @@ export function renderFeaturePage(view: FeaturePageView): string {
       font-size: 0.78rem;
       letter-spacing: 0.18em;
       text-transform: uppercase;
+    }
+    .tickets {
+      list-style: none;
+      margin: 1.1rem 0 0;
+      padding: 0;
+    }
+    .tickets li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      border-bottom: 1px solid var(--rule);
+      padding: 0.7rem 0;
+      font-family: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, monospace;
+      font-size: 0.95rem;
+    }
+    .tickets .closed {
+      color: var(--quiet);
+    }
+    .empty-tickets {
+      margin: 1.1rem 0 0;
+      color: var(--quiet);
+    }
+    .stage-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      margin-top: 1.4rem;
+    }
+    .stage-actions button,
+    .tickets button {
+      border: 2px solid var(--ink);
+      background: var(--ink);
+      color: var(--field);
+      padding: 0.35rem 0.85rem;
+      font: inherit;
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
     }
     .error {
       margin: 1.1rem 0 0;
@@ -165,11 +231,39 @@ export function renderFeaturePage(view: FeaturePageView): string {
     <ol class="stages">${rail}</ol>
     <section class="stage-body">
       <h2>${escapeHtml(feature.openStage)}</h2>
+      ${tickets}
+      ${stageActions}
     </section>
   </main>
 </body>
 </html>
 `;
+}
+
+function nextStage(feature: Feature): StageId | undefined {
+  const index = feature.stages.indexOf(feature.openStage);
+  return index === -1 ? undefined : feature.stages[index + 1];
+}
+
+function stageForm(featureHref: string, stage: StageId, action: string, label: string): string {
+  return `<form method="post" action="${escapeHtml(`${featureHref}/stages/${encodeURIComponent(stage)}/${action}`)}"><button type="submit">${escapeHtml(label)}</button></form>`;
+}
+
+function renderTickets(feature: Feature, featureHref: string, canClose: boolean): string {
+  if (feature.tickets.length === 0) {
+    return `<p class="empty-tickets">No Tickets.</p>`;
+  }
+  const items = feature.tickets
+    .map((ticket) => {
+      const status = ticket.closedInImplement ? "closed-in-implement" : "open";
+      const close =
+        canClose && !ticket.closedInImplement
+          ? `<form method="post" action="${escapeHtml(`${featureHref}/tickets/${encodeURIComponent(ticket.name)}/close`)}"><button type="submit">Close ticket</button></form>`
+          : "";
+      return `<li class="${ticket.closedInImplement ? "closed" : "open"}"><span>${escapeHtml(ticket.name)} · ${status}</span>${close}</li>`;
+    })
+    .join("");
+  return `<ul class="tickets">${items}</ul>`;
 }
 
 function escapeHtml(value: string): string {

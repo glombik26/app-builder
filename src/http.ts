@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { renderFeaturePage } from "./feature-page.ts";
 import { renderHomePage } from "./home-page.ts";
 import { renderProjectPage } from "./project-page.ts";
-import type { Platform, Project } from "./platform.ts";
+import { isStageId, type Platform, type Project } from "./platform.ts";
 
 export type ListenOptions = {
   host: string;
@@ -74,6 +74,43 @@ async function handleRequest(
       return;
     }
     sendHome(response, platform, { error: result.reason });
+    return;
+  }
+
+  const stageAct = path.match(
+    /^\/projects\/([^/]+)\/([^/]+)\/features\/([^/]+)\/stages\/([^/]+)\/(close|reopen|start)$/,
+  );
+  if (request.method === "POST" && stageAct) {
+    const owner = decodeURIComponent(stageAct[1]!);
+    const name = decodeURIComponent(stageAct[2]!);
+    const featureName = decodeURIComponent(stageAct[3]!);
+    const stage = decodeURIComponent(stageAct[4]!);
+    const action = stageAct[5]!;
+    if (!isStageId(stage)) {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+      return;
+    }
+    const result =
+      action === "close"
+        ? await platform.closeStage(owner, name, featureName, stage)
+        : action === "reopen"
+          ? await platform.reopenStage(owner, name, featureName, stage)
+          : await platform.startStage(owner, name, featureName, stage);
+    sendFeatureAct(response, platform, owner, name, featureName, result);
+    return;
+  }
+
+  const closeTicket = path.match(
+    /^\/projects\/([^/]+)\/([^/]+)\/features\/([^/]+)\/tickets\/([^/]+)\/close$/,
+  );
+  if (request.method === "POST" && closeTicket) {
+    const owner = decodeURIComponent(closeTicket[1]!);
+    const name = decodeURIComponent(closeTicket[2]!);
+    const featureName = decodeURIComponent(closeTicket[3]!);
+    const ticketName = decodeURIComponent(closeTicket[4]!);
+    const result = await platform.closeTicket(owner, name, featureName, ticketName);
+    sendFeatureAct(response, platform, owner, name, featureName, result);
     return;
   }
 
@@ -198,6 +235,32 @@ function sendProject(
       name: extras.name,
     }),
   );
+}
+
+function sendFeatureAct(
+  response: ServerResponse,
+  platform: Platform,
+  owner: string,
+  name: string,
+  featureName: string,
+  result: { ok: true } | { ok: false; reason: string },
+): void {
+  const feature = platform.getFeature(owner, name, featureName);
+  if (!feature) {
+    response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+    response.end("Not found");
+    return;
+  }
+  if (result.ok) {
+    response.writeHead(303, { location: featurePagePath(feature.project, feature.name) });
+    response.end();
+    return;
+  }
+  sendHtml(response, renderFeaturePage({ feature, error: result.reason }));
+}
+
+function featurePagePath(project: Project, featureName: string): string {
+  return `${projectPath(project)}/features/${encodeURIComponent(featureName)}`;
 }
 
 function sendHtml(response: ServerResponse, html: string): void {
