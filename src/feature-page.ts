@@ -254,7 +254,13 @@ export function renderFeaturePage(view: FeaturePageView): string {
       font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
       font-size: 0.9rem;
     }
-    .tickets .closed { color: var(--muted); }
+    .ticket-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+    }
+    .tickets .closed,
+    .tickets .blocked { color: var(--muted); }
     .empty-tickets {
       margin: 1.1rem 0 0;
       color: var(--muted);
@@ -867,21 +873,40 @@ function stageForm(featureHref: string, stage: StageId, action: string, label: s
   return `<form method="post" action="${escapeHtml(`${featureHref}/stages/${encodeURIComponent(stage)}/${action}`)}"><button type="submit">${escapeHtml(label)}</button></form>`;
 }
 
-function renderTickets(feature: Feature, featureHref: string, canClose: boolean): string {
+function renderTickets(feature: Feature, featureHref: string, canAct: boolean): string {
   if (feature.tickets.length === 0) {
     return `<p class="empty-tickets">No Tickets.</p>`;
   }
   const items = feature.tickets
     .map((ticket) => {
-      const status = ticket.closedInImplement ? "closed-in-implement" : "open";
-      const close =
-        canClose && !ticket.closedInImplement
-          ? `<form method="post" action="${escapeHtml(`${featureHref}/tickets/${encodeURIComponent(ticket.name)}/close`)}"><button type="submit">Close ticket</button></form>`
-          : "";
-      return `<li class="${ticket.closedInImplement ? "closed" : "open"}"><span>${escapeHtml(ticket.name)} · ${status}</span>${close}</li>`;
+      const status = ticket.closedInImplement
+        ? "closed-in-implement"
+        : ticket.blocked
+          ? "blocked"
+          : "open";
+      const stateClass = ticket.closedInImplement ? "closed" : ticket.blocked ? "blocked" : "open";
+      const otherLive = Boolean(feature.liveTicket && feature.liveTicket !== ticket.name);
+      const actions: string[] = [];
+      if (canAct && !otherLive) {
+        if (ticket.closedInImplement) {
+          if (!ticket.blocked) {
+            actions.push(ticketForm(featureHref, ticket.name, "reopen", "Reopen ticket"));
+          }
+        } else if (!ticket.blocked) {
+          if (feature.liveTicket !== ticket.name) {
+            actions.push(ticketForm(featureHref, ticket.name, "pick", "Pick ticket"));
+          }
+          actions.push(ticketForm(featureHref, ticket.name, "close", "Close ticket"));
+        }
+      }
+      return `<li class="${stateClass}"><span>${escapeHtml(ticket.name)} · ${status}</span><span class="ticket-actions">${actions.join("")}</span></li>`;
     })
     .join("");
   return `<ul class="tickets">${items}</ul>`;
+}
+
+function ticketForm(featureHref: string, ticketName: string, action: string, label: string): string {
+  return `<form method="post" action="${escapeHtml(`${featureHref}/tickets/${encodeURIComponent(ticketName)}/${action}`)}"><button type="submit">${escapeHtml(label)}</button></form>`;
 }
 
 function escapeHtml(value: string): string {

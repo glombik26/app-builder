@@ -11,6 +11,7 @@ import {
   HARNESS_SESSION_RULES,
   type GitAdapter,
   type GitCloneRequest,
+  type GitCommitRequest,
   type GitWorktreeRequest,
   type HarnessAdapter,
   type Feature,
@@ -66,6 +67,9 @@ function succeedingGit(
     async worktreeStatus() {
       return { ok: true, dirty: isDirty?.() ?? false };
     },
+    async commitWorktree() {
+      return { ok: true, committed: false };
+    },
   };
 }
 
@@ -103,6 +107,9 @@ function unusedGit(reason = "should not clone"): GitAdapter {
       return { ok: false, reason };
     },
     async worktreeStatus() {
+      return { ok: false, reason };
+    },
+    async commitWorktree() {
       return { ok: false, reason };
     },
   };
@@ -303,6 +310,56 @@ function writeHandoff(worktree: string, tickets: string[] = [], spec = "# spec\n
     writeFileSync(join(worktree, ".scratch", "issues", ticket), `# ${ticket}\n`);
   }
 }
+
+function writeTicket(worktree: string, name: string, body: string): void {
+  mkdirSync(join(worktree, ".scratch", "issues"), { recursive: true });
+  writeFileSync(join(worktree, ".scratch", "issues", name), body);
+}
+
+function recordingGit(
+  commits: GitCommitRequest[],
+  options: { committed?: boolean | (() => boolean); fail?: string } = {},
+): GitAdapter {
+  const git = succeedingGit();
+  git.commitWorktree = async (request) => {
+    if (options.fail) {
+      return { ok: false, reason: options.fail };
+    }
+    commits.push({ ...request });
+    const committed =
+      typeof options.committed === "function" ? options.committed() : (options.committed ?? true);
+    return { ok: true, committed };
+  };
+  return git;
+}
+
+async function platformRecordingCommits(
+  commits: GitCommitRequest[],
+  options: { committed?: boolean | (() => boolean); fail?: string } = {},
+) {
+  const home = newHome();
+  const harness = subscribedTurningHarness();
+  const platform = createPlatform({
+    home,
+    adapters: { ...emptyAdapters(), git: recordingGit(commits, options), harness },
+  });
+  assert.equal((await platform.addProject("https://github.com/acme/widgets")).ok, true);
+  return { home, platform, harness };
+}
+
+const TICKET_CLOSE_IGNORE = [
+  ".scratch/",
+  ".env",
+  ".env.*",
+  "!.env.example",
+  "!.env.sample",
+  "!.env.template",
+  "*.pem",
+  "*.key",
+  "id_rsa",
+  "id_ed25519",
+  "id_ecdsa",
+];
 
 describe("Platform", () => {
   it("lists no Projects on a new home", () => {
@@ -1231,8 +1288,8 @@ describe("Platform", () => {
     writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["billing.md", "login.md"]);
     const listed = platform.getFeature("acme", "widgets", "login-form");
     assert.deepEqual(listed?.tickets, [
-      { name: "billing.md", closedInImplement: false },
-      { name: "login.md", closedInImplement: false },
+      { name: "billing.md", blocked: false, closedInImplement: false },
+      { name: "login.md", blocked: false, closedInImplement: false },
     ]);
   });
 
@@ -1281,8 +1338,8 @@ describe("Platform", () => {
       return;
     }
     assert.deepEqual(billing.feature.tickets, [
-      { name: "billing.md", closedInImplement: true },
-      { name: "login.md", closedInImplement: true },
+      { name: "billing.md", blocked: false, closedInImplement: true },
+      { name: "login.md", blocked: false, closedInImplement: true },
     ]);
 
     const closed = await platform.closeStage("acme", "widgets", "login-form", "implement");
@@ -1312,7 +1369,7 @@ describe("Platform", () => {
 
     const second = platformWithGit(home, unusedGit("should not clone or add a worktree"));
     assert.deepEqual(second.getFeature("acme", "widgets", "login-form")?.tickets, [
-      { name: "login.md", closedInImplement: true },
+      { name: "login.md", blocked: false, closedInImplement: true },
     ]);
   });
 
@@ -1332,6 +1389,7 @@ describe("Platform", () => {
     assert.match(html, /implement/);
     assert.match(html, /login\.md/);
     assert.match(html, />Close</);
+    assert.match(html, /Pick ticket/);
     assert.match(html, /Close ticket/);
     assert.equal(html.includes("<iframe"), false);
     assert.equal(/git[\s-]*diff/i.test(html), false);
@@ -2200,13 +2258,13 @@ describe("Platform", () => {
     assert.equal((await platform.addProject("https://github.com/acme/widgets")).ok, true);
     assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
     const gitignore = join(home, "worktrees", "acme", "widgets", "login-form", ".gitignore");
-    assert.equal(readFileSync(gitignore, "utf8"), "node_modules/\n.grok/skills/\n");
+    assert.equal(readFileSync(gitignore, "utf8"), "node_modules/\n.grok/skills/\n.scratch/\n");
 
     assert.equal(
       (await platform.sendTurn("acme", "widgets", "login-form", "/grill-with-docs login-form")).ok,
       true,
     );
-    assert.equal(readFileSync(gitignore, "utf8"), "node_modules/\n.grok/skills/\n");
+    assert.equal(readFileSync(gitignore, "utf8"), "node_modules/\n.grok/skills/\n.scratch/\n");
   });
 
   it("continues the grill-with-docs session on to-spec and prefills /to-spec for the first Turn", async () => {
@@ -2453,8 +2511,335 @@ describe("Platform", () => {
     assert.equal(existsSync(join(worktree, ".scratch", "spec.md")), true);
     assert.equal(readFileSync(join(worktree, ".scratch", "spec.md"), "utf8"), "# login spec\n");
     assert.equal(existsSync(join(worktree, ".scratch", "issues", "01-login.md")), true);
-    assert.deepEqual(feature?.tickets, [{ name: "01-login.md", closedInImplement: false }]);
+    assert.deepEqual(feature?.tickets, [
+      { name: "01-login.md", blocked: false, closedInImplement: false },
+    ]);
     assert.equal(feature?.tickets.some((ticket) => "number" in ticket || "url" in ticket), false);
+  });
+
+  it("lets the Operator pick the next Ticket from the unblocked frontier and refuses a blocked Ticket", async () => {
+    const { home, platform } = await platformWithProject();
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const worktree = join(home, "worktrees", "acme", "widgets", "login-form");
+    writeTicket(
+      worktree,
+      "01-login.md",
+      "# 01 — Login\n\n**Blocked by:** None — can start immediately\n",
+    );
+    writeTicket(worktree, "02-billing.md", "# 02 — Billing\n\n**Blocked by:** 01-login.md\n");
+    await reachStage(platform, "login-form", "implement");
+
+    const listed = platform.getFeature("acme", "widgets", "login-form");
+    assert.deepEqual(listed?.tickets, [
+      { name: "01-login.md", blocked: false, closedInImplement: false },
+      { name: "02-billing.md", blocked: true, closedInImplement: false },
+    ]);
+
+    const blocked = await platform.pickTicket("acme", "widgets", "login-form", "02-billing.md");
+    assert.deepEqual(blocked, { ok: false, reason: "Ticket 02-billing.md is blocked." });
+
+    const picked = await platform.pickTicket("acme", "widgets", "login-form", "01-login.md");
+    assert.equal(picked.ok, true);
+    assert.equal(picked.ok && picked.feature.liveTicket, "01-login.md");
+
+    assert.equal((await platform.closeTicket("acme", "widgets", "login-form", "01-login.md")).ok, true);
+    const after = platform.getFeature("acme", "widgets", "login-form");
+    assert.deepEqual(after?.tickets, [
+      { name: "01-login.md", blocked: false, closedInImplement: true },
+      { name: "02-billing.md", blocked: false, closedInImplement: false },
+    ]);
+    const next = await platform.pickTicket("acme", "widgets", "login-form", "02-billing.md");
+    assert.equal(next.ok, true);
+    assert.equal(next.ok && next.feature.liveTicket, "02-billing.md");
+  });
+
+  it("refuses to close a blocked Ticket or another Ticket while one session is live", async () => {
+    const commits: GitCommitRequest[] = [];
+    const { home, platform } = await platformRecordingCommits(commits);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const worktree = join(home, "worktrees", "acme", "widgets", "login-form");
+    writeTicket(
+      worktree,
+      "01-login.md",
+      "# 01 — Login\n\n**Blocked by:** None — can start immediately\n",
+    );
+    writeTicket(
+      worktree,
+      "02-billing.md",
+      "# 02 — Billing\n\n**Blocked by:** None — can start immediately\n",
+    );
+    writeTicket(worktree, "03-pay.md", "# 03 — Pay\n\n**Blocked by:** 01-login.md\n");
+    await reachStage(platform, "login-form", "implement");
+
+    const blockedClose = await platform.closeTicket("acme", "widgets", "login-form", "03-pay.md");
+    assert.deepEqual(blockedClose, { ok: false, reason: "Ticket 03-pay.md is blocked." });
+    assert.equal(commits.length, 0);
+
+    assert.equal((await platform.pickTicket("acme", "widgets", "login-form", "01-login.md")).ok, true);
+    writeFileSync(join(worktree, "wip.ts"), "export {}\n");
+    const other = await platform.closeTicket("acme", "widgets", "login-form", "02-billing.md");
+    assert.deepEqual(other, {
+      ok: false,
+      reason: "A Feature allows at most one live implement Ticket session.",
+    });
+    assert.equal(commits.length, 0);
+    assert.equal(platform.getFeature("acme", "widgets", "login-form")?.liveTicket, "01-login.md");
+  });
+
+  it("prefills the first Turn of a Ticket Slot as /implement .scratch/issues/<file> and the Operator sends it", async () => {
+    const harness = subscribedTurningHarness({ createSessionId: () => "sess-login" });
+    const { home, platform } = await platformWithProjectAndHarness(newHome(), harness);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["login.md"]);
+    await reachStage(platform, "login-form", "implement");
+    assert.equal((await platform.pickTicket("acme", "widgets", "login-form", "login.md")).ok, true);
+
+    const first = await platform.getSlot("acme", "widgets", "login-form");
+    assert.equal(first?.prompt, "/implement .scratch/issues/login.md");
+    assert.equal(first?.inFlight, false);
+
+    const sent = await platform.sendTurn(
+      "acme",
+      "widgets",
+      "login-form",
+      "/implement .scratch/issues/login.md",
+    );
+    assert.deepEqual(sent, { ok: true });
+    assert.equal(harness.starts.length, 1);
+    assert.equal(harness.starts[0]?.prompt, "/implement .scratch/issues/login.md");
+    assert.equal("sessionId" in (harness.starts[0] ?? {}), false);
+    harness.emit({ kind: "turn_ended", stopReason: "end_turn" });
+
+    const later = await platform.getSlot("acme", "widgets", "login-form");
+    assert.equal(later?.prompt, "");
+  });
+
+  it("reopens a Ticket as a new Slot with the implement prefill again", async () => {
+    const harness = subscribedTurningHarness({
+      createSessionId: () => `sess-${harness.starts.length + 1}`,
+    });
+    const { home, platform } = await platformWithProjectAndHarness(newHome(), harness);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["login.md"]);
+    await reachStage(platform, "login-form", "implement");
+    assert.equal((await platform.pickTicket("acme", "widgets", "login-form", "login.md")).ok, true);
+    assert.equal(
+      (await platform.sendTurn("acme", "widgets", "login-form", "/implement .scratch/issues/login.md"))
+        .ok,
+      true,
+    );
+    harness.emit({ kind: "turn_ended", stopReason: "end_turn" });
+    assert.equal((await platform.closeTicket("acme", "widgets", "login-form", "login.md")).ok, true);
+
+    const reopened = await platform.reopenTicket("acme", "widgets", "login-form", "login.md");
+    assert.equal(reopened.ok, true);
+    assert.equal(reopened.ok && reopened.feature.liveTicket, "login.md");
+    assert.equal(reopened.ok && reopened.feature.tickets[0]?.closedInImplement, false);
+
+    const slot = await platform.getSlot("acme", "widgets", "login-form");
+    assert.equal(slot?.prompt, "/implement .scratch/issues/login.md");
+    assert.deepEqual(slot?.events, []);
+
+    const sent = await platform.sendTurn(
+      "acme",
+      "widgets",
+      "login-form",
+      "/implement .scratch/issues/login.md",
+    );
+    assert.deepEqual(sent, { ok: true });
+    assert.equal(harness.starts.length, 2);
+    assert.equal("sessionId" in (harness.starts[0] ?? {}), false);
+    assert.equal("sessionId" in (harness.starts[1] ?? {}), false);
+  });
+
+  it("closes a Ticket with a diff as one Platform commit whose message is the Ticket name", async () => {
+    const commits: GitCommitRequest[] = [];
+    const { home, platform } = await platformRecordingCommits(commits);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const worktree = join(home, "worktrees", "acme", "widgets", "login-form");
+    writeHandoff(worktree, ["login.md"]);
+    await reachStage(platform, "login-form", "implement");
+
+    const closed = await platform.closeTicket("acme", "widgets", "login-form", "login.md");
+    assert.equal(closed.ok, true);
+    assert.equal(closed.ok && closed.feature.tickets[0]?.closedInImplement, true);
+    assert.equal(commits.length, 1);
+    assert.equal(commits[0]?.worktree, worktree);
+    assert.equal(commits[0]?.message, "login.md");
+    assert.equal(commits[0]?.author.name, "Platform");
+    assert.equal(commits[0]?.author.email, "platform@app-builder");
+  });
+
+  it("writes no commit when closing a Ticket with no diff", async () => {
+    const commits: GitCommitRequest[] = [];
+    const { home, platform } = await platformRecordingCommits(commits, { committed: false });
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["login.md"]);
+    await reachStage(platform, "login-form", "implement");
+
+    const closed = await platform.closeTicket("acme", "widgets", "login-form", "login.md");
+    assert.equal(closed.ok, true);
+    assert.equal(closed.ok && closed.feature.tickets[0]?.closedInImplement, true);
+    assert.equal(commits.length, 1);
+    assert.equal(commits[0]?.message, "login.md");
+  });
+
+  it("keeps the Ticket open when the commit fails", async () => {
+    const commits: GitCommitRequest[] = [];
+    const { home, platform } = await platformRecordingCommits(commits, { fail: "index.lock exists" });
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["login.md"]);
+    await reachStage(platform, "login-form", "implement");
+
+    const closed = await platform.closeTicket("acme", "widgets", "login-form", "login.md");
+    assert.deepEqual(closed, { ok: false, reason: "index.lock exists" });
+    assert.equal(platform.getFeature("acme", "widgets", "login-form")?.tickets[0]?.closedInImplement, false);
+    assert.equal(commits.length, 0);
+  });
+
+  it("stacks another commit when the Operator reopens and closes a Ticket again", async () => {
+    const commits: GitCommitRequest[] = [];
+    let committed = true;
+    const { home, platform } = await platformRecordingCommits(commits, {
+      committed: () => committed,
+    });
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["login.md"]);
+    await reachStage(platform, "login-form", "implement");
+
+    assert.equal((await platform.closeTicket("acme", "widgets", "login-form", "login.md")).ok, true);
+    assert.equal((await platform.reopenTicket("acme", "widgets", "login-form", "login.md")).ok, true);
+    committed = true;
+    assert.equal((await platform.closeTicket("acme", "widgets", "login-form", "login.md")).ok, true);
+
+    assert.equal(commits.length, 2);
+    assert.deepEqual(
+      commits.map((commit) => commit.message),
+      ["login.md", "login.md"],
+    );
+  });
+
+  it("adds .scratch/ and the secret-path list to the Project gitignore on Ticket close", async () => {
+    const { home, platform } = await platformWithProject();
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const worktree = join(home, "worktrees", "acme", "widgets", "login-form");
+    writeFileSync(join(worktree, ".gitignore"), "node_modules/\n");
+    writeHandoff(worktree, ["login.md"]);
+    writeFileSync(join(worktree, ".env"), "SECRET=1\n");
+    writeFileSync(join(worktree, "id_rsa"), "fake-key\n");
+    await reachStage(platform, "login-form", "implement");
+
+    const closed = await platform.closeTicket("acme", "widgets", "login-form", "login.md");
+    assert.equal(closed.ok, true);
+    const gitignore = readFileSync(join(worktree, ".gitignore"), "utf8");
+    assert.match(gitignore, /^node_modules\/$/m);
+    for (const pattern of TICKET_CLOSE_IGNORE) {
+      assert.match(gitignore, new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+    }
+    assert.equal(existsSync(join(worktree, ".env")), true);
+    assert.equal(existsSync(join(worktree, "id_rsa")), true);
+    assert.equal((gitignore.match(/^\.scratch\/$/gm) || []).length, 1);
+
+    assert.equal((await platform.reopenTicket("acme", "widgets", "login-form", "login.md")).ok, true);
+    assert.equal((await platform.closeTicket("acme", "widgets", "login-form", "login.md")).ok, true);
+    assert.equal(
+      (readFileSync(join(worktree, ".gitignore"), "utf8").match(/^\.env$/gm) || []).length,
+      1,
+    );
+  });
+
+  it("keeps .env.example un-ignored when .env.* is appended after an existing exception", async () => {
+    const { home, platform } = await platformWithProject();
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const worktree = join(home, "worktrees", "acme", "widgets", "login-form");
+    writeFileSync(join(worktree, ".gitignore"), "!.env.example\n");
+    writeHandoff(worktree, ["login.md"]);
+    await reachStage(platform, "login-form", "implement");
+
+    assert.equal((await platform.closeTicket("acme", "widgets", "login-form", "login.md")).ok, true);
+    const lines = readFileSync(join(worktree, ".gitignore"), "utf8")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    assert.ok(lines.lastIndexOf("!.env.example") > lines.lastIndexOf(".env.*"));
+    assert.ok(lines.lastIndexOf("!.env.sample") > lines.lastIndexOf(".env.*"));
+    assert.ok(lines.lastIndexOf("!.env.template") > lines.lastIndexOf(".env.*"));
+  });
+
+  it("does not push the Feature branch or open a PR when a Ticket closes", async () => {
+    const calls: string[] = [];
+    const home = newHome();
+    const git = succeedingGit();
+    const tracked: GitAdapter = new Proxy(git, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (typeof value === "function") {
+          calls.push(String(prop));
+          return value.bind(target);
+        }
+        return value;
+      },
+    });
+    const platform = createPlatform({
+      home,
+      adapters: { ...emptyAdapters(), git: tracked },
+    });
+    assert.equal((await platform.addProject("https://github.com/acme/widgets")).ok, true);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["login.md"]);
+    await reachStage(platform, "login-form", "implement");
+    assert.equal((await platform.closeTicket("acme", "widgets", "login-form", "login.md")).ok, true);
+
+    assert.equal(calls.includes("commitWorktree"), true);
+    assert.equal(calls.some((name) => /push|pullRequest|pr/i.test(name)), false);
+  });
+
+  it("picks a Ticket from the Feature page and shows the implement prefill", async () => {
+    const harness = subscribedTurningHarness();
+    const { home, platform } = await platformWithProjectAndHarness(newHome(), harness);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["login.md"]);
+    await reachStage(platform, "login-form", "implement");
+
+    await withControlPlane(platform, async (base) => {
+      const page = await fetch(`${base}/projects/acme/widgets/features/login-form`);
+      assert.equal(page.status, 200);
+      const html = await page.text();
+      assert.match(html, /Pick ticket/);
+      assert.match(html, /\/tickets\/login.md\/pick/);
+      assert.equal(html.includes("/implement .scratch/issues/login.md"), false);
+
+      const picked = await fetch(
+        `${base}/projects/acme/widgets/features/login-form/tickets/login.md/pick`,
+        { method: "POST", redirect: "manual" },
+      );
+      assert.equal(picked.status, 303);
+
+      const next = await fetch(`${base}/projects/acme/widgets/features/login-form`);
+      const nextHtml = await next.text();
+      assert.match(nextHtml, /\/implement \.scratch\/issues\/login.md/);
+    });
+  });
+
+  it("hides Pick on a blocked Ticket and offers Reopen after close", async () => {
+    const { home, platform } = await platformWithProject();
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const worktree = join(home, "worktrees", "acme", "widgets", "login-form");
+    writeTicket(worktree, "01-login.md", "# 01 — Login\n\n**Blocked by:** None — can start immediately\n");
+    writeTicket(worktree, "02-billing.md", "# 02 — Billing\n\n**Blocked by:** 01\n");
+    await reachStage(platform, "login-form", "implement");
+    const html = renderFeaturePage({ feature: platform.getFeature("acme", "widgets", "login-form")! });
+    assert.match(html, /01-login.md · open/);
+    assert.match(html, /02-billing.md · blocked/);
+    assert.match(html, /\/tickets\/01-login.md\/pick/);
+    assert.equal(html.includes("/tickets/02-billing.md/pick"), false);
+    assert.equal(html.includes("/tickets/02-billing.md/close"), false);
+
+    assert.equal((await platform.closeTicket("acme", "widgets", "login-form", "01-login.md")).ok, true);
+    const after = renderFeaturePage({ feature: platform.getFeature("acme", "widgets", "login-form")! });
+    assert.match(after, /Reopen ticket/);
+    assert.match(after, /\/tickets\/01-login.md\/reopen/);
+    assert.match(after, /\/tickets\/02-billing.md\/pick/);
   });
 });
 

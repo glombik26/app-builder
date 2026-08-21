@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-import type { GitAdapter, GitCloneResult, GitWorktreeStatus } from "./platform.ts";
+import type { GitAdapter, GitCloneResult, GitCommitResult, GitWorktreeStatus } from "./platform.ts";
 
 export function createGitAdapter(): GitAdapter {
   return {
@@ -79,6 +79,45 @@ export function createGitAdapter(): GitAdapter {
       }
       return { ok: true, dirty: status.stdout.trim().length > 0 };
     },
+    async commitWorktree({ worktree, message, author }): Promise<GitCommitResult> {
+      const added = await runGit(["-C", worktree, "add", "-A"]);
+      if (!added.ok) {
+        return added;
+      }
+      const staged = await runGitCode(["-C", worktree, "diff", "--cached", "--quiet"]);
+      if (staged.code === 0) {
+        return { ok: true, committed: false };
+      }
+      if (staged.code !== 1) {
+        return {
+          ok: false,
+          reason: staged.reason || "git diff --cached failed",
+        };
+      }
+      const committed = await runGit(
+        [
+          "-C",
+          worktree,
+          "-c",
+          `user.name=${author.name}`,
+          "-c",
+          `user.email=${author.email}`,
+          "commit",
+          "-m",
+          message,
+        ],
+        {
+          GIT_AUTHOR_NAME: author.name,
+          GIT_AUTHOR_EMAIL: author.email,
+          GIT_COMMITTER_NAME: author.name,
+          GIT_COMMITTER_EMAIL: author.email,
+        },
+      );
+      if (!committed.ok) {
+        return committed;
+      }
+      return { ok: true, committed: true };
+    },
   };
 }
 
@@ -120,10 +159,25 @@ function patCloneReason(reason: string): string {
   return reason;
 }
 
-function runGit(args: string[]): Promise<{ ok: true; stdout: string } | { ok: false; reason: string }> {
+function runGit(
+  args: string[],
+  extraEnv?: NodeJS.ProcessEnv,
+): Promise<{ ok: true; stdout: string } | { ok: false; reason: string }> {
+  return runGitCode(args, extraEnv).then((result) => {
+    if (result.code === 0) {
+      return { ok: true, stdout: result.stdout };
+    }
+    return { ok: false, reason: result.reason };
+  });
+}
+
+function runGitCode(
+  args: string[],
+  extraEnv?: NodeJS.ProcessEnv,
+): Promise<{ code: number; stdout: string; reason: string }> {
   return new Promise((resolve) => {
     const child = spawn("git", args, {
-      env: gitEnv(),
+      env: { ...gitEnv(), ...extraEnv },
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
@@ -134,16 +188,13 @@ function runGit(args: string[]): Promise<{ ok: true; stdout: string } | { ok: fa
       stderr.push(chunk);
     });
     child.on("error", (error) => {
-      resolve({ ok: false, reason: error.message });
+      resolve({ code: 1, stdout: "", reason: error.message });
     });
     child.on("close", (code) => {
-      if (code === 0) {
-        resolve({ ok: true, stdout: Buffer.concat(stdout).toString("utf8") });
-        return;
-      }
+      const output = Buffer.concat(stdout).toString("utf8");
       const detail = Buffer.concat(stderr).toString("utf8").trim().split("\n").at(-1) ?? "";
       const reason = detail.replace(/^fatal:\s*/i, "").trim() || "git failed";
-      resolve({ ok: false, reason });
+      resolve({ code: code ?? 1, stdout: output, reason });
     });
   });
 }

@@ -35,6 +35,16 @@ export type GitWorktreeStatus =
   | { ok: true; dirty: boolean }
   | { ok: false; reason: string };
 
+export type GitCommitRequest = {
+  worktree: string;
+  message: string;
+  author: { name: string; email: string };
+};
+
+export type GitCommitResult =
+  | { ok: true; committed: boolean }
+  | { ok: false; reason: string };
+
 export type GitAdapter = {
   clonePublic(request: GitCloneRequest): Promise<GitCloneResult>;
   cloneWithPat(request: GitCloneRequest & { credential: string }): Promise<GitCloneResult>;
@@ -42,6 +52,7 @@ export type GitAdapter = {
   addFeatureWorktree(request: GitWorktreeRequest): Promise<GitCloneResult>;
   removeFeatureWorktree(request: GitWorktreeRequest): Promise<GitCloneResult>;
   worktreeStatus(request: { worktree: string }): Promise<GitWorktreeStatus>;
+  commitWorktree(request: GitCommitRequest): Promise<GitCommitResult>;
 };
 
 export type ComposeAdapter = {
@@ -145,6 +156,7 @@ export type FeaturePreview = {
 export type FeatureTicket = {
   name: string;
   closedInImplement: boolean;
+  blocked: boolean;
 };
 
 export type Feature = {
@@ -181,6 +193,7 @@ export type Platform = {
   reopenStage(owner: string, name: string, featureName: string, stage: StageId): Promise<FeatureActResult>;
   startStage(owner: string, name: string, featureName: string, stage: StageId): Promise<FeatureActResult>;
   closeTicket(owner: string, name: string, featureName: string, ticketName: string): Promise<FeatureActResult>;
+  reopenTicket(owner: string, name: string, featureName: string, ticketName: string): Promise<FeatureActResult>;
   pickTicket(owner: string, name: string, featureName: string, ticketName: string): Promise<FeatureActResult>;
   subscription(): Promise<Subscription>;
   completeDeviceCode(): Promise<CompleteDeviceCodeResult>;
@@ -205,6 +218,20 @@ const CLONES_DIR = "clones";
 const WORKTREES_DIR = "worktrees";
 const FEATURES_DIR = "features";
 const NO_PREVIEW: FeaturePreview = { status: "none", links: [] };
+const PLATFORM_COMMIT_AUTHOR = { name: "Platform", email: "platform@app-builder" };
+const TICKET_CLOSE_IGNORE = [
+  ".scratch/",
+  ".env",
+  ".env.*",
+  "!.env.example",
+  "!.env.sample",
+  "!.env.template",
+  "*.pem",
+  "*.key",
+  "id_rsa",
+  "id_ed25519",
+  "id_ecdsa",
+];
 const ENVIRONMENT_SLUGS: Record<string, "TEST" | "PROD"> = {
   test: "TEST",
   prod: "PROD",
@@ -229,6 +256,9 @@ export function emptyAdapters(): Adapters {
         return { ok: false, reason: "Git adapter is not configured" };
       },
       async worktreeStatus() {
+        return { ok: false, reason: "Git adapter is not configured" };
+      },
+      async commitWorktree() {
         return { ok: false, reason: "Git adapter is not configured" };
       },
     },
@@ -314,6 +344,13 @@ export function createPlatform(options: {
     }
     if (feature.openStage === "to-tickets" && !record.slots["to-tickets"]) {
       return "/to-tickets";
+    }
+    if (
+      feature.openStage === "implement" &&
+      record.liveTicket &&
+      !record.slots.implement?.[record.liveTicket]
+    ) {
+      return `/implement .scratch/issues/${record.liveTicket}`;
     }
     return "";
   }
@@ -465,6 +502,7 @@ export function createPlatform(options: {
       ensureHandoffDirs(worktree);
       options.adapters.harness.ensureWorktreeStageSkills(worktree);
       ensureGitignoreLine(worktree, ".grok/skills/");
+      ensureGitignoreLine(worktree, ".scratch/");
       const record = initialFeatureRecord(parsed.name);
       writeFeatureRecord(recordsDir, project, record);
       return { ok: true, feature: viewFeature(options.home, project, record) };
@@ -671,6 +709,7 @@ export function createPlatform(options: {
       }
       options.adapters.harness.ensureWorktreeStageSkills(worktree);
       ensureGitignoreLine(worktree, ".grok/skills/");
+      ensureGitignoreLine(worktree, ".scratch/");
       runtime.inFlight = true;
       publish(runtime, { kind: "prompt", text: prompt });
       const request: HarnessTurnRequest = {
@@ -729,6 +768,9 @@ export function createPlatform(options: {
       if (ticket.closedInImplement) {
         return { ok: false, reason: `Ticket ${ticketName} is already closed-in-implement.` };
       }
+      if (ticket.blocked) {
+        return { ok: false, reason: `Ticket ${ticketName} is blocked.` };
+      }
       if (record.liveTicket && record.liveTicket !== ticketName) {
         return {
           ok: false,
@@ -757,10 +799,67 @@ export function createPlatform(options: {
       if (ticket.closedInImplement) {
         return { ok: false, reason: `Ticket ${ticketName} is already closed-in-implement.` };
       }
+      if (ticket.blocked) {
+        return { ok: false, reason: `Ticket ${ticketName} is blocked.` };
+      }
+      if (record.liveTicket && record.liveTicket !== ticketName) {
+        return {
+          ok: false,
+          reason: "A Feature allows at most one live implement Ticket session.",
+        };
+      }
+      ensureTicketCloseGitignore(worktree);
+      const committed = await options.adapters.git.commitWorktree({
+        worktree,
+        message: ticketName,
+        author: PLATFORM_COMMIT_AUTHOR,
+      });
+      if (!committed.ok) {
+        return committed;
+      }
       const next = {
         ...record,
         closedInImplement: [...record.closedInImplement, ticketName],
         liveTicket: record.liveTicket === ticketName ? undefined : record.liveTicket,
+      };
+      writeFeatureRecord(recordsDir, project, next);
+      return { ok: true, feature: viewFeature(options.home, project, next) };
+    },
+    async reopenTicket(owner, name, featureName, ticketName) {
+      const loaded = loadFeatureRecord(recordsDir, owner, name, featureName);
+      if (!loaded.ok) {
+        return loaded;
+      }
+      const { project, record } = loaded;
+      if (record.openStage !== "implement" || record.closedStages.includes("implement")) {
+        return { ok: false, reason: "implement is not open." };
+      }
+      const worktree = featureWorktree(options.home, project, record.name);
+      const tickets = listTickets(worktree, record.closedInImplement);
+      const ticket = tickets.find((item) => item.name === ticketName);
+      if (!ticket) {
+        return { ok: false, reason: `Ticket ${ticketName} does not exist.` };
+      }
+      if (!ticket.closedInImplement) {
+        return { ok: false, reason: `Ticket ${ticketName} is not closed-in-implement.` };
+      }
+      const remainingClosed = record.closedInImplement.filter((item) => item !== ticketName);
+      const nextTickets = listTickets(worktree, remainingClosed);
+      const reopened = nextTickets.find((item) => item.name === ticketName);
+      if (reopened?.blocked) {
+        return { ok: false, reason: `Ticket ${ticketName} is blocked.` };
+      }
+      if (record.liveTicket && record.liveTicket !== ticketName) {
+        return {
+          ok: false,
+          reason: "A Feature allows at most one live implement Ticket session.",
+        };
+      }
+      runtimes.delete(runtimeKey(project, record.name, `implement/${ticketName}`));
+      const next = {
+        ...withoutImplementSession(record, ticketName),
+        closedInImplement: remainingClosed,
+        liveTicket: ticketName,
       };
       writeFeatureRecord(recordsDir, project, next);
       return { ok: true, feature: viewFeature(options.home, project, next) };
@@ -971,6 +1070,18 @@ function slotSessionId(record: FeatureRecord): string | undefined {
   return undefined;
 }
 
+function withoutImplementSession(record: FeatureRecord, ticketName: string): FeatureRecord {
+  const implement = { ...record.slots.implement };
+  delete implement[ticketName];
+  const slots: FeatureSlots = { ...record.slots };
+  if (Object.keys(implement).length > 0) {
+    slots.implement = implement;
+  } else {
+    delete slots.implement;
+  }
+  return { ...record, slots };
+}
+
 function withStoredSession(record: FeatureRecord, sessionId: string): FeatureRecord {
   if (record.openStage === "grill-with-docs") {
     return { ...record, slots: { ...record.slots, "grill-with-docs": sessionId } };
@@ -1046,17 +1157,62 @@ function listTickets(worktree: string, closedInImplement: string[]): FeatureTick
   if (!existsSync(dir)) {
     return [];
   }
-  const tickets: FeatureTicket[] = [];
+  const names: string[] = [];
+  const bodies = new Map<string, string>();
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isFile() || entry.name.startsWith(".")) {
       continue;
     }
-    tickets.push({
-      name: entry.name,
-      closedInImplement: closedInImplement.includes(entry.name),
-    });
+    names.push(entry.name);
+    try {
+      bodies.set(entry.name, readFileSync(join(dir, entry.name), "utf8"));
+    } catch {
+      bodies.set(entry.name, "");
+    }
   }
-  return tickets.sort((a, b) => a.name.localeCompare(b.name));
+  names.sort((a, b) => a.localeCompare(b));
+  return names.map((name) => {
+    const blockers = ticketBlockers(bodies.get(name) ?? "", names, name);
+    const blocked = blockers.some((blocker) => !closedInImplement.includes(blocker));
+    return {
+      name,
+      closedInImplement: closedInImplement.includes(name),
+      blocked,
+    };
+  });
+}
+
+function ticketBlockers(body: string, names: string[], self: string): string[] {
+  const match = body.match(/^\s*(?:\*\*)?Blocked by:(?:\*\*)?\s*(.+)$/im);
+  if (!match) {
+    return [];
+  }
+  const value = match[1]!.trim();
+  if (/^none\b/i.test(value)) {
+    return [];
+  }
+  const found = names.filter((name) => name !== self && valueReferencesTicket(value, name));
+  return found.length > 0 ? found : [value];
+}
+
+function valueReferencesTicket(value: string, name: string): boolean {
+  if (value.includes(name)) {
+    return true;
+  }
+  const stem = name.replace(/\.[^.]+$/, "");
+  if (value.includes(stem)) {
+    return true;
+  }
+  const number = stem.match(/^(\d+)/)?.[1];
+  if (number && new RegExp(`(?:^|[^A-Za-z0-9])${escapeRegex(number)}(?:[^A-Za-z0-9]|$)`).test(value)) {
+    return true;
+  }
+  const slug = stem.replace(/^\d+-/, "");
+  return slug.length >= 3 && new RegExp(`\\b${escapeRegex(slug)}\\b`, "i").test(value);
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function loadFeatures(home: string, recordsDir: string, project: Project): Feature[] {
@@ -1111,6 +1267,33 @@ function featureWorktree(home: string, project: Project, featureName: string): s
 
 function ensureHandoffDirs(worktree: string): void {
   mkdirSync(join(worktree, ".scratch", "issues"), { recursive: true });
+}
+
+function ensureTicketCloseGitignore(worktree: string): void {
+  for (const pattern of TICKET_CLOSE_IGNORE) {
+    ensureGitignoreLine(worktree, pattern);
+  }
+  ensureEnvExceptionsFollowWildcard(worktree);
+}
+
+function ensureEnvExceptionsFollowWildcard(worktree: string): void {
+  const path = join(worktree, ".gitignore");
+  if (!existsSync(path)) {
+    return;
+  }
+  const text = readFileSync(path, "utf8");
+  const lines = text.split(/\r?\n/).map((line) => line.trim());
+  const lastWildcard = lines.lastIndexOf(".env.*");
+  if (lastWildcard === -1) {
+    return;
+  }
+  const exceptions = ["!.env.example", "!.env.sample", "!.env.template"];
+  const missing = exceptions.filter((pattern) => lines.lastIndexOf(pattern) < lastWildcard);
+  if (missing.length === 0) {
+    return;
+  }
+  const body = text.length === 0 || text.endsWith("\n") ? text : `${text}\n`;
+  writeFileSync(path, `${body}${missing.join("\n")}\n`);
 }
 
 function ensureGitignoreLine(worktree: string, pattern: string): void {

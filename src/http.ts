@@ -205,15 +205,21 @@ async function handleRequest(
     return;
   }
 
-  const closeTicket = path.match(
-    /^\/projects\/([^/]+)\/([^/]+)\/features\/([^/]+)\/tickets\/([^/]+)\/close$/,
+  const ticketAct = path.match(
+    /^\/projects\/([^/]+)\/([^/]+)\/features\/([^/]+)\/tickets\/([^/]+)\/(close|pick|reopen)$/,
   );
-  if (request.method === "POST" && closeTicket) {
-    const owner = decodeURIComponent(closeTicket[1]!);
-    const name = decodeURIComponent(closeTicket[2]!);
-    const featureName = decodeURIComponent(closeTicket[3]!);
-    const ticketName = decodeURIComponent(closeTicket[4]!);
-    const result = await platform.closeTicket(owner, name, featureName, ticketName);
+  if (request.method === "POST" && ticketAct) {
+    const owner = decodeURIComponent(ticketAct[1]!);
+    const name = decodeURIComponent(ticketAct[2]!);
+    const featureName = decodeURIComponent(ticketAct[3]!);
+    const ticketName = decodeURIComponent(ticketAct[4]!);
+    const action = ticketAct[5]!;
+    const result =
+      action === "close"
+        ? await platform.closeTicket(owner, name, featureName, ticketName)
+        : action === "pick"
+          ? await platform.pickTicket(owner, name, featureName, ticketName)
+          : await platform.reopenTicket(owner, name, featureName, ticketName);
     await sendFeatureAct(response, platform, owner, name, featureName, result);
     return;
   }
