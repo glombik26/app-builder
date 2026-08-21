@@ -725,6 +725,37 @@ describe("Platform", () => {
     assert.deepEqual(platform.listFeatures("acme", "widgets").map((feature) => feature.name), [
       "login-form",
     ]);
+    assert.equal(existsSync(join(worktrees[0]!.worktree, ".scratch")), true);
+    assert.equal(existsSync(join(worktrees[0]!.worktree, ".scratch", "issues")), true);
+  });
+
+  it("recreates the worktree handoff dirs when to-spec starts if they are missing", async () => {
+    const { home, platform } = await platformWithProject();
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const worktree = join(home, "worktrees", "acme", "widgets", "login-form");
+    rmSync(join(worktree, ".scratch"), { recursive: true, force: true });
+    assert.equal(existsSync(join(worktree, ".scratch")), false);
+
+    assert.equal((await platform.closeStage("acme", "widgets", "login-form", "grill-with-docs")).ok, true);
+    assert.equal((await platform.startStage("acme", "widgets", "login-form", "to-spec")).ok, true);
+
+    assert.equal(existsSync(join(worktree, ".scratch")), true);
+    assert.equal(existsSync(join(worktree, ".scratch", "issues")), true);
+  });
+
+  it("recreates the worktree handoff dirs before a to-spec Turn if they are missing", async () => {
+    const harness = subscribedTurningHarness();
+    const { home, platform } = await platformWithProjectAndHarness(newHome(), harness);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    assert.equal((await platform.closeStage("acme", "widgets", "login-form", "grill-with-docs")).ok, true);
+    assert.equal((await platform.startStage("acme", "widgets", "login-form", "to-spec")).ok, true);
+    const worktree = join(home, "worktrees", "acme", "widgets", "login-form");
+    rmSync(join(worktree, ".scratch"), { recursive: true, force: true });
+
+    assert.equal((await platform.sendTurn("acme", "widgets", "login-form", "/to-spec")).ok, true);
+
+    assert.equal(existsSync(join(worktree, ".scratch")), true);
+    assert.equal(existsSync(join(worktree, ".scratch", "issues")), true);
   });
 
   it("keeps the Feature name unique within the Project and unchanged after create", async () => {

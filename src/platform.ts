@@ -460,6 +460,7 @@ export function createPlatform(options: {
         rmSync(worktree, { recursive: true, force: true });
         return added;
       }
+      ensureHandoffDirs(worktree);
       const record = initialFeatureRecord(parsed.name);
       writeFeatureRecord(recordsDir, project, record);
       return { ok: true, feature: viewFeature(options.home, project, record) };
@@ -601,6 +602,9 @@ export function createPlatform(options: {
         openStage: stage,
         startedStages: [...record.startedStages, stage],
       };
+      if (stage === "to-spec" || stage === "to-tickets") {
+        ensureHandoffDirs(featureWorktree(options.home, project, record.name));
+      }
       writeFeatureRecord(recordsDir, project, next);
       return { ok: true, feature: viewFeature(options.home, project, next) };
     },
@@ -658,6 +662,9 @@ export function createPlatform(options: {
         return { ok: false, reason: "A Turn is already in flight." };
       }
       const worktree = featureWorktree(options.home, project, record.name);
+      if (record.openStage === "to-spec" || record.openStage === "to-tickets") {
+        ensureHandoffDirs(worktree);
+      }
       runtime.inFlight = true;
       publish(runtime, { kind: "prompt", text: prompt });
       const request: HarnessTurnRequest = {
@@ -1094,6 +1101,10 @@ function loadFeatureRecord(
 
 function featureWorktree(home: string, project: Project, featureName: string): string {
   return join(home, WORKTREES_DIR, project.owner, project.name, featureName);
+}
+
+function ensureHandoffDirs(worktree: string): void {
+  mkdirSync(join(worktree, ".scratch", "issues"), { recursive: true });
 }
 
 function featuresDir(recordsDir: string, project: Project): string {
