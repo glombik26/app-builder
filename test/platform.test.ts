@@ -149,6 +149,7 @@ function missingSubscriptionHarness(grokHome: string): HarnessAdapter {
       return { ok: true };
     },
     ensureStageSkills() {},
+    ensureWorktreeStageSkills() {},
     async startTurn() {
       return { ok: true, sessionId: "test-session" };
     },
@@ -222,6 +223,7 @@ function subscribedTurningHarness(
       return { ok: true };
     },
     ensureStageSkills() {},
+    ensureWorktreeStageSkills() {},
     async startTurn(request, listener) {
       if (listeners.has(request.cwd)) {
         return { ok: false, reason: "A Turn is already in flight." };
@@ -2135,8 +2137,76 @@ describe("Platform", () => {
       readFileSync(join(grokHome, "skills", "implement", "SKILL.md"), "utf8"),
       /\.scratch\/issues/,
     );
-    assert.equal(existsSync(join(worktree, ".grok", "skills")), false);
+    for (const name of ["grill-with-docs", "to-spec", "to-tickets", "implement"]) {
+      const skill = readFileSync(join(worktree, ".grok", "skills", name, "SKILL.md"), "utf8");
+      assert.match(skill, /do not commit/i);
+    }
+    assert.match(
+      readFileSync(join(worktree, ".grok", "skills", "to-spec", "SKILL.md"), "utf8"),
+      /\.scratch\/spec\.md/,
+    );
     assert.equal(existsSync(join(worktree, ".agents", "skills", "implement")), false);
+    assert.match(readFileSync(join(worktree, ".gitignore"), "utf8"), /^\.grok\/skills\/$/m);
+  });
+
+  it("refreshes the worktree Stage skills before a Turn so a Project to-spec does not win", async () => {
+    const harness = subscribedTurningHarness();
+    harness.ensureWorktreeStageSkills = (cwd) => {
+      mkdirSync(join(cwd, ".grok", "skills", "to-spec"), { recursive: true });
+      writeFileSync(
+        join(cwd, ".grok", "skills", "to-spec", "SKILL.md"),
+        "Write the spec to `.scratch/spec.md`. Do not commit.\n",
+      );
+    };
+    const { home, platform } = await platformWithProjectAndHarness(newHome(), harness);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const worktree = join(home, "worktrees", "acme", "widgets", "login-form");
+    mkdirSync(join(worktree, ".agents", "skills", "to-spec"), { recursive: true });
+    writeFileSync(
+      join(worktree, ".agents", "skills", "to-spec", "SKILL.md"),
+      "---\nname: to-spec\n---\nPublish the spec to the project issue tracker.\n",
+    );
+    writeFileSync(
+      join(worktree, ".grok", "skills", "to-spec", "SKILL.md"),
+      "---\nname: to-spec\n---\nPublish the spec to the project issue tracker.\n",
+    );
+
+    const sent = await platform.sendTurn("acme", "widgets", "login-form", "/to-spec");
+    assert.deepEqual(sent, { ok: true });
+    assert.match(
+      readFileSync(join(worktree, ".grok", "skills", "to-spec", "SKILL.md"), "utf8"),
+      /\.scratch\/spec\.md/,
+    );
+    assert.match(
+      readFileSync(join(worktree, ".agents", "skills", "to-spec", "SKILL.md"), "utf8"),
+      /issue tracker/,
+    );
+  });
+
+  it("appends .grok/skills/ to an existing Project gitignore without duplicating it", async () => {
+    const home = newHome();
+    const git = succeedingGit();
+    const add = git.addFeatureWorktree.bind(git);
+    git.addFeatureWorktree = async (request) => {
+      const result = await add(request);
+      writeFileSync(join(request.worktree, ".gitignore"), "node_modules/\n");
+      return result;
+    };
+    const harness = subscribedTurningHarness();
+    const platform = createPlatform({
+      home,
+      adapters: { ...emptyAdapters(), git, harness },
+    });
+    assert.equal((await platform.addProject("https://github.com/acme/widgets")).ok, true);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const gitignore = join(home, "worktrees", "acme", "widgets", "login-form", ".gitignore");
+    assert.equal(readFileSync(gitignore, "utf8"), "node_modules/\n.grok/skills/\n");
+
+    assert.equal(
+      (await platform.sendTurn("acme", "widgets", "login-form", "/grill-with-docs login-form")).ok,
+      true,
+    );
+    assert.equal(readFileSync(gitignore, "utf8"), "node_modules/\n.grok/skills/\n");
   });
 
   it("continues the grill-with-docs session on to-spec and prefills /to-spec for the first Turn", async () => {

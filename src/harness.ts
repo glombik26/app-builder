@@ -13,6 +13,14 @@ import type {
 const STAGE_SKILLS = ["grill-with-docs", "to-spec", "to-tickets", "implement"] as const;
 const SKILL_SOURCE = join(dirname(fileURLToPath(import.meta.url)), "skills");
 
+function installStageSkills(destRoot: string): void {
+  for (const name of STAGE_SKILLS) {
+    const destDir = join(destRoot, name);
+    mkdirSync(destDir, { recursive: true });
+    copyFileSync(join(SKILL_SOURCE, name, "SKILL.md"), join(destDir, "SKILL.md"));
+  }
+}
+
 export function createHarnessAdapter(options: {
   grokHome?: string;
   grokBin?: string;
@@ -107,16 +115,16 @@ export function createHarnessAdapter(options: {
       return { ok: false, reason };
     },
     ensureStageSkills() {
-      for (const name of STAGE_SKILLS) {
-        const destDir = join(grokHome, "skills", name);
-        mkdirSync(destDir, { recursive: true });
-        copyFileSync(join(SKILL_SOURCE, name, "SKILL.md"), join(destDir, "SKILL.md"));
-      }
+      installStageSkills(join(grokHome, "skills"));
+    },
+    ensureWorktreeStageSkills(cwd) {
+      installStageSkills(join(cwd, ".grok", "skills"));
     },
     async startTurn(request, onEvent) {
       if (liveTurns.has(request.cwd)) {
         return { ok: false, reason: "A Turn is already in flight." };
       }
+      installStageSkills(join(request.cwd, ".grok", "skills"));
       try {
         const turn = await spawnTurn(
           grokBin,

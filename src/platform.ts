@@ -94,6 +94,7 @@ export type HarnessAdapter = {
   >;
   completeDeviceCode(): Promise<CompleteDeviceCodeResult>;
   ensureStageSkills(): void;
+  ensureWorktreeStageSkills(cwd: string): void;
   startTurn(
     request: HarnessTurnRequest,
     onEvent: (event: SlotEvent) => void,
@@ -245,6 +246,7 @@ export function emptyAdapters(): Adapters {
         return { ok: false, reason: "Harness adapter is not configured" };
       },
       ensureStageSkills() {},
+      ensureWorktreeStageSkills() {},
       async startTurn() {
         return { ok: false, reason: "Harness adapter is not configured" };
       },
@@ -461,6 +463,8 @@ export function createPlatform(options: {
         return added;
       }
       ensureHandoffDirs(worktree);
+      options.adapters.harness.ensureWorktreeStageSkills(worktree);
+      ensureGitignoreLine(worktree, ".grok/skills/");
       const record = initialFeatureRecord(parsed.name);
       writeFeatureRecord(recordsDir, project, record);
       return { ok: true, feature: viewFeature(options.home, project, record) };
@@ -665,6 +669,8 @@ export function createPlatform(options: {
       if (record.openStage === "to-spec" || record.openStage === "to-tickets") {
         ensureHandoffDirs(worktree);
       }
+      options.adapters.harness.ensureWorktreeStageSkills(worktree);
+      ensureGitignoreLine(worktree, ".grok/skills/");
       runtime.inFlight = true;
       publish(runtime, { kind: "prompt", text: prompt });
       const request: HarnessTurnRequest = {
@@ -1105,6 +1111,17 @@ function featureWorktree(home: string, project: Project, featureName: string): s
 
 function ensureHandoffDirs(worktree: string): void {
   mkdirSync(join(worktree, ".scratch", "issues"), { recursive: true });
+}
+
+function ensureGitignoreLine(worktree: string, pattern: string): void {
+  const path = join(worktree, ".gitignore");
+  const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const lines = existing.split(/\r?\n/).map((line) => line.trim());
+  if (lines.includes(pattern) || lines.includes(pattern.replace(/\/$/, ""))) {
+    return;
+  }
+  const body = existing.length === 0 || existing.endsWith("\n") ? existing : `${existing}\n`;
+  writeFileSync(path, `${body}${pattern}\n`);
 }
 
 function featuresDir(recordsDir: string, project: Project): string {
