@@ -154,6 +154,7 @@ export type Feature = {
   stageStatuses: Record<StageId, StageStatus>;
   tickets: FeatureTicket[];
   preview: FeaturePreview;
+  liveTicket?: string;
 };
 
 export type CreateFeatureResult =
@@ -179,6 +180,7 @@ export type Platform = {
   reopenStage(owner: string, name: string, featureName: string, stage: StageId): Promise<FeatureActResult>;
   startStage(owner: string, name: string, featureName: string, stage: StageId): Promise<FeatureActResult>;
   closeTicket(owner: string, name: string, featureName: string, ticketName: string): Promise<FeatureActResult>;
+  pickTicket(owner: string, name: string, featureName: string, ticketName: string): Promise<FeatureActResult>;
   subscription(): Promise<Subscription>;
   completeDeviceCode(): Promise<CompleteDeviceCodeResult>;
   getSlot(owner: string, name: string, featureName: string): Promise<FeatureSlot | undefined>;
@@ -273,8 +275,12 @@ export function createPlatform(options: {
   };
   const runtimes = new Map<string, SlotRuntime>();
 
-  function runtimeKey(project: Project, featureName: string): string {
-    return `${project.owner}/${project.name}/${featureName}`;
+  function runtimeKey(project: Project, featureName: string, slot: string): string {
+    return `${project.owner}/${project.name}/${featureName}/${slot}`;
+  }
+
+  function featureRuntimePrefix(project: Project, featureName: string): string {
+    return `${project.owner}/${project.name}/${featureName}/`;
   }
 
   function ensureRuntime(key: string): SlotRuntime {
@@ -297,20 +303,26 @@ export function createPlatform(options: {
     }
   }
 
-  function grillPrompt(feature: Feature, sessionId: string | undefined): string {
-    if (feature.openStage !== "grill-with-docs" || sessionId) {
-      return "";
+  function slotPrompt(feature: Feature, record: FeatureRecord): string {
+    if (feature.openStage === "grill-with-docs" && !record.slots["grill-with-docs"]) {
+      return `/grill-with-docs ${feature.name}`;
     }
-    return `/grill-with-docs ${feature.name}`;
+    if (feature.openStage === "to-spec" && !record.toSpecKickoffSent) {
+      return "/to-spec";
+    }
+    if (feature.openStage === "to-tickets" && !record.slots["to-tickets"]) {
+      return "/to-tickets";
+    }
+    return "";
   }
 
   async function hydrateSlot(
     project: Project,
     record: FeatureRecord,
   ): Promise<SlotRuntime> {
-    const key = runtimeKey(project, record.name);
+    const key = runtimeKey(project, record.name, slotKey(record));
     const runtime = ensureRuntime(key);
-    const sessionId = record.slots["grill-with-docs"];
+    const sessionId = slotSessionId(record);
     if (!runtime.inFlight && sessionId && runtime.events.length === 0) {
       runtime.events = await options.adapters.harness.loadHistory(
         featureWorktree(options.home, project, record.name),
@@ -463,12 +475,22 @@ export function createPlatform(options: {
       if (!feature) {
         return { ok: false, reason: `Feature ${featureName} does not exist.` };
       }
-      const key = runtimeKey(project, feature.name);
-      const runtime = runtimes.get(key);
-      if (runtime?.inFlight) {
+      const prefix = featureRuntimePrefix(project, feature.name);
+      let inFlight = false;
+      for (const [key, runtime] of runtimes) {
+        if (key.startsWith(prefix) && runtime.inFlight) {
+          inFlight = true;
+          break;
+        }
+      }
+      if (inFlight) {
         await options.adapters.harness.cancelTurn(featureWorktree(options.home, project, feature.name));
       }
-      runtimes.delete(key);
+      for (const key of [...runtimes.keys()]) {
+        if (key.startsWith(prefix)) {
+          runtimes.delete(key);
+        }
+      }
       await options.adapters.compose.removePreview({
         composeProject: previewComposeProject(project, feature.name),
       });
@@ -603,7 +625,7 @@ export function createPlatform(options: {
       const feature = viewFeature(options.home, loaded.project, loaded.record);
       const runtime = await hydrateSlot(loaded.project, loaded.record);
       return {
-        prompt: grillPrompt(feature, loaded.record.slots["grill-with-docs"]),
+        prompt: slotPrompt(feature, loaded.record),
         inFlight: runtime.inFlight,
         events: [...runtime.events],
       };
@@ -628,6 +650,9 @@ export function createPlatform(options: {
         return loaded;
       }
       const { project, record } = loaded;
+      if (record.openStage === "implement" && !record.liveTicket) {
+        return { ok: false, reason: "No implement Ticket session is live." };
+      }
       const runtime = await hydrateSlot(project, record);
       if (runtime.inFlight) {
         return { ok: false, reason: "A Turn is already in flight." };
@@ -641,8 +666,9 @@ export function createPlatform(options: {
         alwaysApprove: true,
         rules: HARNESS_SESSION_RULES,
       };
-      if (record.slots["grill-with-docs"]) {
-        request.sessionId = record.slots["grill-with-docs"];
+      const sessionId = slotSessionId(record);
+      if (sessionId) {
+        request.sessionId = sessionId;
       }
       const started = await options.adapters.harness.startTurn(request, (event) => {
         publish(runtime, event);
@@ -653,10 +679,7 @@ export function createPlatform(options: {
         return started;
       }
       if (started.sessionId) {
-        writeFeatureRecord(recordsDir, project, {
-          ...record,
-          slots: { ...record.slots, "grill-with-docs": started.sessionId },
-        });
+        writeFeatureRecord(recordsDir, project, withStoredSession(record, started.sessionId));
       }
       return { ok: true };
     },
@@ -665,13 +688,43 @@ export function createPlatform(options: {
       if (!loaded.ok) {
         return loaded;
       }
-      const runtime = runtimes.get(runtimeKey(loaded.project, loaded.record.name));
+      const runtime = runtimes.get(
+        runtimeKey(loaded.project, loaded.record.name, slotKey(loaded.record)),
+      );
       if (!runtime?.inFlight) {
         return { ok: false, reason: "No Turn is in flight." };
       }
       return options.adapters.harness.cancelTurn(
         featureWorktree(options.home, loaded.project, loaded.record.name),
       );
+    },
+    async pickTicket(owner, name, featureName, ticketName) {
+      const loaded = loadFeatureRecord(recordsDir, owner, name, featureName);
+      if (!loaded.ok) {
+        return loaded;
+      }
+      const { project, record } = loaded;
+      if (record.openStage !== "implement" || record.closedStages.includes("implement")) {
+        return { ok: false, reason: "implement is not open." };
+      }
+      const worktree = featureWorktree(options.home, project, record.name);
+      const tickets = listTickets(worktree, record.closedInImplement);
+      const ticket = tickets.find((item) => item.name === ticketName);
+      if (!ticket) {
+        return { ok: false, reason: `Ticket ${ticketName} does not exist.` };
+      }
+      if (ticket.closedInImplement) {
+        return { ok: false, reason: `Ticket ${ticketName} is already closed-in-implement.` };
+      }
+      if (record.liveTicket && record.liveTicket !== ticketName) {
+        return {
+          ok: false,
+          reason: "A Feature allows at most one live implement Ticket session.",
+        };
+      }
+      const next = { ...record, liveTicket: ticketName };
+      writeFeatureRecord(recordsDir, project, next);
+      return { ok: true, feature: viewFeature(options.home, project, next) };
     },
     async closeTicket(owner, name, featureName, ticketName) {
       const loaded = loadFeatureRecord(recordsDir, owner, name, featureName);
@@ -694,6 +747,7 @@ export function createPlatform(options: {
       const next = {
         ...record,
         closedInImplement: [...record.closedInImplement, ticketName],
+        liveTicket: record.liveTicket === ticketName ? undefined : record.liveTicket,
       };
       writeFeatureRecord(recordsDir, project, next);
       return { ok: true, feature: viewFeature(options.home, project, next) };
@@ -808,6 +862,8 @@ function featureSlugCollision(
 
 type FeatureSlots = {
   "grill-with-docs"?: string;
+  "to-tickets"?: string;
+  implement?: Record<string, string>;
 };
 
 type FeatureRecord = {
@@ -816,6 +872,8 @@ type FeatureRecord = {
   startedStages: StageId[];
   closedStages: StageId[];
   closedInImplement: string[];
+  liveTicket?: string;
+  toSpecKickoffSent?: boolean;
   slots: FeatureSlots;
 };
 
@@ -845,6 +903,8 @@ function parseFeatureRecord(raw: unknown): FeatureRecord | undefined {
     closedInImplement: Array.isArray(recorded.closedInImplement)
       ? recorded.closedInImplement.filter((item): item is string => typeof item === "string")
       : [],
+    liveTicket: typeof recorded.liveTicket === "string" ? recorded.liveTicket : undefined,
+    toSpecKickoffSent: recorded.toSpecKickoffSent === true ? true : undefined,
     slots: parseFeatureSlots(recorded.slots),
   };
 }
@@ -854,9 +914,77 @@ function parseFeatureSlots(raw: unknown): FeatureSlots {
     return {};
   }
   const recorded = raw as FeatureSlots;
-  return typeof recorded["grill-with-docs"] === "string"
-    ? { "grill-with-docs": recorded["grill-with-docs"] }
-    : {};
+  const slots: FeatureSlots = {};
+  if (typeof recorded["grill-with-docs"] === "string") {
+    slots["grill-with-docs"] = recorded["grill-with-docs"];
+  }
+  if (typeof recorded["to-tickets"] === "string") {
+    slots["to-tickets"] = recorded["to-tickets"];
+  }
+  if (recorded.implement && typeof recorded.implement === "object") {
+    const implement: Record<string, string> = {};
+    for (const [ticketName, sessionId] of Object.entries(recorded.implement)) {
+      if (typeof sessionId === "string") {
+        implement[ticketName] = sessionId;
+      }
+    }
+    if (Object.keys(implement).length > 0) {
+      slots.implement = implement;
+    }
+  }
+  return slots;
+}
+
+function slotKey(record: FeatureRecord): string {
+  if (record.openStage === "grill-with-docs" || record.openStage === "to-spec") {
+    return "grill-with-docs";
+  }
+  if (record.openStage === "to-tickets") {
+    return "to-tickets";
+  }
+  return record.liveTicket ? `implement/${record.liveTicket}` : "implement";
+}
+
+function slotSessionId(record: FeatureRecord): string | undefined {
+  if (record.openStage === "grill-with-docs" || record.openStage === "to-spec") {
+    return record.slots["grill-with-docs"];
+  }
+  if (record.openStage === "to-tickets") {
+    return record.slots["to-tickets"];
+  }
+  if (record.liveTicket) {
+    return record.slots.implement?.[record.liveTicket];
+  }
+  return undefined;
+}
+
+function withStoredSession(record: FeatureRecord, sessionId: string): FeatureRecord {
+  if (record.openStage === "grill-with-docs") {
+    return { ...record, slots: { ...record.slots, "grill-with-docs": sessionId } };
+  }
+  if (record.openStage === "to-spec") {
+    return {
+      ...record,
+      toSpecKickoffSent: true,
+      slots: {
+        ...record.slots,
+        "grill-with-docs": record.slots["grill-with-docs"] ?? sessionId,
+      },
+    };
+  }
+  if (record.openStage === "to-tickets") {
+    return { ...record, slots: { ...record.slots, "to-tickets": sessionId } };
+  }
+  if (record.liveTicket) {
+    return {
+      ...record,
+      slots: {
+        ...record.slots,
+        implement: { ...record.slots.implement, [record.liveTicket]: sessionId },
+      },
+    };
+  }
+  return record;
 }
 
 export function isStageId(value: unknown): value is StageId {
@@ -872,6 +1000,7 @@ function viewFeature(home: string, project: Project, record: FeatureRecord): Fea
     stageStatuses: deriveStageStatuses(record),
     tickets: listTickets(featureWorktree(home, project, record.name), record.closedInImplement),
     preview: { ...NO_PREVIEW, links: [] },
+    ...(record.liveTicket ? { liveTicket: record.liveTicket } : {}),
   };
 }
 

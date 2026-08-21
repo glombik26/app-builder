@@ -166,21 +166,33 @@ type TurningHarness = HarnessAdapter & {
   cancels: string[];
   loads: { cwd: string; sessionId: string }[];
   liveCount: number;
-  emit(event: SlotEvent): void;
+  emit(event: SlotEvent, cwd?: string): void;
 };
 
 function subscribedTurningHarness(
   options: {
     sessionId?: string;
     history?: SlotEvent[];
+    createSessionId?: () => string;
   } = {},
 ): TurningHarness {
   const starts: HarnessTurnRequest[] = [];
   const cancels: string[] = [];
   const loads: { cwd: string; sessionId: string }[] = [];
-  let onEvent: ((event: SlotEvent) => void) | undefined;
+  const listeners = new Map<string, (event: SlotEvent) => void>();
   let liveCount = 0;
-  const sessionId = options.sessionId ?? "sess-grill";
+  const newSessionId = options.createSessionId ?? (() => options.sessionId ?? "sess-grill");
+
+  function listenerFor(cwd?: string): ((event: SlotEvent) => void) | undefined {
+    if (cwd) {
+      return listeners.get(cwd);
+    }
+    if (listeners.size === 1) {
+      return [...listeners.values()][0];
+    }
+    return undefined;
+  }
+
   return {
     starts,
     cancels,
@@ -188,11 +200,17 @@ function subscribedTurningHarness(
     get liveCount() {
       return liveCount;
     },
-    emit(event) {
+    emit(event, cwd) {
+      const target = listenerFor(cwd);
       if (event.kind === "turn_ended") {
         liveCount = Math.max(0, liveCount - 1);
+        if (cwd) {
+          listeners.delete(cwd);
+        } else if (listeners.size === 1) {
+          listeners.clear();
+        }
       }
-      onEvent?.(event);
+      target?.(event);
     },
     async hasSubscription() {
       return true;
@@ -205,15 +223,23 @@ function subscribedTurningHarness(
     },
     ensureStageSkills() {},
     async startTurn(request, listener) {
+      if (listeners.has(request.cwd)) {
+        return { ok: false, reason: "A Turn is already in flight." };
+      }
       starts.push(request);
-      onEvent = listener;
+      listeners.set(request.cwd, listener);
       liveCount += 1;
-      return { ok: true, sessionId: request.sessionId ?? sessionId };
+      return { ok: true, sessionId: request.sessionId ?? newSessionId() };
     },
     async cancelTurn(cwd) {
       cancels.push(cwd);
+      if (!listeners.has(cwd)) {
+        return { ok: false, reason: "No Turn is in flight." };
+      }
       liveCount = Math.max(0, liveCount - 1);
-      onEvent?.({ kind: "turn_ended", stopReason: "cancelled" });
+      const listener = listeners.get(cwd);
+      listeners.delete(cwd);
+      listener?.({ kind: "turn_ended", stopReason: "cancelled" });
       return { ok: true };
     },
     async loadHistory(cwd, id) {
@@ -2025,6 +2051,38 @@ describe("Platform", () => {
     assert.equal(harness.starts[0]?.prompt, "/grill-with-docs login-form");
   });
 
+  it("sends the first to-spec Turn from the Feature prompt box on the shared session", async () => {
+    const harness = subscribedTurningHarness({ sessionId: "sess-grill" });
+    const { platform } = await platformWithProjectAndHarness(newHome(), harness);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    assert.equal(
+      (await platform.sendTurn("acme", "widgets", "login-form", "/grill-with-docs login-form")).ok,
+      true,
+    );
+    harness.emit({ kind: "turn_ended", stopReason: "end_turn" });
+    assert.equal((await platform.closeStage("acme", "widgets", "login-form", "grill-with-docs")).ok, true);
+    assert.equal((await platform.startStage("acme", "widgets", "login-form", "to-spec")).ok, true);
+
+    await withControlPlane(platform, async (base) => {
+      const page = await fetch(`${base}/projects/acme/widgets/features/login-form`);
+      assert.equal(page.status, 200);
+      const html = await page.text();
+      assert.match(html, /\/to-spec/);
+      assert.match(html, /name="prompt"/);
+
+      const sent = await fetch(`${base}/projects/acme/widgets/features/login-form/turns`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "prompt=%2Fto-spec",
+        redirect: "manual",
+      });
+      assert.equal(sent.status, 303);
+    });
+    assert.equal(harness.starts.length, 2);
+    assert.equal(harness.starts[1]?.prompt, "/to-spec");
+    assert.equal(harness.starts[1]?.sessionId, "sess-grill");
+  });
+
   it("runs sessions always-approve with thin English rules and installs adapted Stage skills once under the Platform user", async () => {
     const grokHome = newHome();
     const home = newHome();
@@ -2048,6 +2106,254 @@ describe("Platform", () => {
     );
     assert.equal(existsSync(join(worktree, ".grok", "skills")), false);
     assert.equal(existsSync(join(worktree, ".agents", "skills", "implement")), false);
+  });
+
+  it("continues the grill-with-docs session on to-spec and prefills /to-spec for the first Turn", async () => {
+    const ids = ["sess-grill", "sess-tickets"];
+    const harness = subscribedTurningHarness({ createSessionId: () => ids.shift() ?? "sess-extra" });
+    const { home, platform } = await platformWithProjectAndHarness(newHome(), harness);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const worktree = join(home, "worktrees", "acme", "widgets", "login-form");
+
+    assert.equal(
+      (await platform.sendTurn("acme", "widgets", "login-form", "/grill-with-docs login-form")).ok,
+      true,
+    );
+    harness.emit({ kind: "text", text: "What is the Operator?" });
+    harness.emit({ kind: "turn_ended", stopReason: "end_turn" });
+    assert.equal((await platform.closeStage("acme", "widgets", "login-form", "grill-with-docs")).ok, true);
+    assert.equal((await platform.startStage("acme", "widgets", "login-form", "to-spec")).ok, true);
+
+    const slot = await platform.getSlot("acme", "widgets", "login-form");
+    assert.equal(slot?.prompt, "/to-spec");
+    assert.equal(slot?.inFlight, false);
+    assert.deepEqual(slot?.events, [
+      { kind: "prompt", text: "/grill-with-docs login-form" },
+      { kind: "text", text: "What is the Operator?" },
+      { kind: "turn_ended", stopReason: "end_turn" },
+    ]);
+
+    const html = renderFeaturePage({
+      feature: platform.getFeature("acme", "widgets", "login-form")!,
+      slot,
+    });
+    assert.match(html, /<textarea[^>]*name="prompt"[^>]*>\/to-spec<\/textarea>/);
+    assert.match(html, /What is the Operator\?/);
+
+    const sent = await platform.sendTurn("acme", "widgets", "login-form", "/to-spec");
+    assert.deepEqual(sent, { ok: true });
+    assert.equal(harness.starts.length, 2);
+    assert.equal(harness.starts[1]?.sessionId, "sess-grill");
+    assert.equal(harness.starts[1]?.cwd, worktree);
+    assert.equal(harness.starts[1]?.prompt, "/to-spec");
+    assert.equal(harness.starts[1]?.alwaysApprove, true);
+    assert.equal(harness.starts[1]?.rules, HARNESS_SESSION_RULES);
+    harness.emit({ kind: "turn_ended", stopReason: "end_turn" });
+
+    const later = await platform.getSlot("acme", "widgets", "login-form");
+    assert.equal(later?.prompt, "");
+
+    assert.equal((await platform.closeStage("acme", "widgets", "login-form", "to-spec")).ok, true);
+    assert.equal((await platform.reopenStage("acme", "widgets", "login-form", "to-spec")).ok, true);
+    const reopened = await platform.getSlot("acme", "widgets", "login-form");
+    assert.equal(reopened?.prompt, "");
+    const resume = await platform.sendTurn("acme", "widgets", "login-form", "keep synthesizing");
+    assert.deepEqual(resume, { ok: true });
+    assert.equal(harness.starts[2]?.sessionId, "sess-grill");
+  });
+
+  it("hydrates the shared grill session when to-spec is opened on a second Platform", async () => {
+    const history: SlotEvent[] = [
+      { kind: "prompt", text: "/grill-with-docs login-form" },
+      { kind: "text", text: "What is the Operator?" },
+      { kind: "turn_ended", stopReason: "end_turn" },
+    ];
+    const firstHarness = subscribedTurningHarness({ sessionId: "sess-grill" });
+    const home = newHome();
+    const { platform } = await platformWithProjectAndHarness(home, firstHarness);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    assert.equal(
+      (await platform.sendTurn("acme", "widgets", "login-form", "/grill-with-docs login-form")).ok,
+      true,
+    );
+    firstHarness.emit({ kind: "text", text: "What is the Operator?" });
+    firstHarness.emit({ kind: "turn_ended", stopReason: "end_turn" });
+    assert.equal((await platform.closeStage("acme", "widgets", "login-form", "grill-with-docs")).ok, true);
+    assert.equal((await platform.startStage("acme", "widgets", "login-form", "to-spec")).ok, true);
+
+    const secondHarness = subscribedTurningHarness({ sessionId: "sess-grill", history });
+    const second = createPlatform({
+      home,
+      adapters: { ...emptyAdapters(), git: unusedGit("should not clone or add a worktree"), harness: secondHarness },
+    });
+    const slot = await second.getSlot("acme", "widgets", "login-form");
+    assert.equal(slot?.prompt, "/to-spec");
+    assert.deepEqual(slot?.events, history);
+    assert.deepEqual(secondHarness.loads, [
+      { cwd: join(home, "worktrees", "acme", "widgets", "login-form"), sessionId: "sess-grill" },
+    ]);
+
+    assert.equal((await second.sendTurn("acme", "widgets", "login-form", "/to-spec")).ok, true);
+    assert.equal(secondHarness.starts[0]?.sessionId, "sess-grill");
+  });
+
+  it("starts to-tickets as a fresh session on the Feature worktree with prefilled /to-tickets", async () => {
+    const ids = ["sess-grill", "sess-tickets"];
+    const harness = subscribedTurningHarness({ createSessionId: () => ids.shift() ?? "sess-extra" });
+    const { home, platform } = await platformWithProjectAndHarness(newHome(), harness);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const worktree = join(home, "worktrees", "acme", "widgets", "login-form");
+
+    assert.equal(
+      (await platform.sendTurn("acme", "widgets", "login-form", "/grill-with-docs login-form")).ok,
+      true,
+    );
+    harness.emit({ kind: "turn_ended", stopReason: "end_turn" });
+    await reachStage(platform, "login-form", "to-tickets");
+
+    const slot = await platform.getSlot("acme", "widgets", "login-form");
+    assert.equal(slot?.prompt, "/to-tickets");
+    assert.deepEqual(slot?.events, []);
+
+    const html = renderFeaturePage({
+      feature: platform.getFeature("acme", "widgets", "login-form")!,
+      slot,
+    });
+    assert.match(html, /<textarea[^>]*name="prompt"[^>]*>\/to-tickets<\/textarea>/);
+
+    const sent = await platform.sendTurn("acme", "widgets", "login-form", "/to-tickets");
+    assert.deepEqual(sent, { ok: true });
+    assert.equal(harness.starts.length, 2);
+    assert.equal("sessionId" in (harness.starts[1] ?? {}), false);
+    assert.equal(harness.starts[1]?.cwd, worktree);
+    assert.equal(harness.starts[1]?.prompt, "/to-tickets");
+    harness.emit({ kind: "turn_ended", stopReason: "end_turn" });
+
+    const followUp = await platform.sendTurn("acme", "widgets", "login-form", "split login from billing");
+    assert.deepEqual(followUp, { ok: true });
+    assert.equal(harness.starts[2]?.sessionId, "sess-tickets");
+    assert.notEqual(harness.starts[2]?.sessionId, "sess-grill");
+    harness.emit({ kind: "turn_ended", stopReason: "end_turn" });
+
+    const later = await platform.getSlot("acme", "widgets", "login-form");
+    assert.equal(later?.prompt, "");
+
+    assert.equal((await platform.closeStage("acme", "widgets", "login-form", "to-tickets")).ok, true);
+    assert.equal((await platform.reopenStage("acme", "widgets", "login-form", "to-tickets")).ok, true);
+    const reopened = await platform.getSlot("acme", "widgets", "login-form");
+    assert.equal(reopened?.prompt, "");
+    const resume = await platform.sendTurn("acme", "widgets", "login-form", "keep splitting");
+    assert.deepEqual(resume, { ok: true });
+    assert.equal(harness.starts[3]?.sessionId, "sess-tickets");
+  });
+
+  it("lets two Features have in-flight Turns at the same time", async () => {
+    const harness = subscribedTurningHarness({
+      createSessionId: () => `sess-${harness.starts.length + 1}`,
+    });
+    const { home, platform } = await platformWithProjectAndHarness(newHome(), harness);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    assert.equal((await platform.createFeature("acme", "widgets", "billing")).ok, true);
+    const loginTree = join(home, "worktrees", "acme", "widgets", "login-form");
+    const billingTree = join(home, "worktrees", "acme", "widgets", "billing");
+
+    const loginSeen: SlotEvent[] = [];
+    const billingSeen: SlotEvent[] = [];
+    await platform.watchSlot("acme", "widgets", "login-form", (event) => {
+      loginSeen.push(event);
+    });
+    await platform.watchSlot("acme", "widgets", "billing", (event) => {
+      billingSeen.push(event);
+    });
+
+    assert.equal((await platform.sendTurn("acme", "widgets", "login-form", "grill login")).ok, true);
+    assert.equal((await platform.sendTurn("acme", "widgets", "billing", "grill billing")).ok, true);
+    assert.equal(harness.starts.length, 2);
+    assert.equal(harness.liveCount, 2);
+    assert.equal((await platform.getSlot("acme", "widgets", "login-form"))?.inFlight, true);
+    assert.equal((await platform.getSlot("acme", "widgets", "billing"))?.inFlight, true);
+
+    harness.emit({ kind: "text", text: "login stream" }, loginTree);
+    harness.emit({ kind: "text", text: "billing stream" }, billingTree);
+
+    assert.deepEqual(loginSeen, [
+      { kind: "prompt", text: "grill login" },
+      { kind: "text", text: "login stream" },
+    ]);
+    assert.deepEqual(billingSeen, [
+      { kind: "prompt", text: "grill billing" },
+      { kind: "text", text: "billing stream" },
+    ]);
+    assert.equal(harness.starts[0]?.cwd, loginTree);
+    assert.equal(harness.starts[1]?.cwd, billingTree);
+  });
+
+  it("refuses a second live implement Ticket session on the same Feature", async () => {
+    const harness = subscribedTurningHarness();
+    const { home, platform } = await platformWithProjectAndHarness(newHome(), harness);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["login.md", "billing.md"]);
+    await reachStage(platform, "login-form", "implement");
+
+    const first = await platform.pickTicket("acme", "widgets", "login-form", "login.md");
+    assert.equal(first.ok, true);
+    if (!first.ok) {
+      return;
+    }
+    assert.equal(first.feature.liveTicket, "login.md");
+
+    const second = await platform.pickTicket("acme", "widgets", "login-form", "billing.md");
+    assert.deepEqual(second, {
+      ok: false,
+      reason: "A Feature allows at most one live implement Ticket session.",
+    });
+    assert.equal(platform.getFeature("acme", "widgets", "login-form")?.liveTicket, "login.md");
+
+    assert.equal((await platform.closeTicket("acme", "widgets", "login-form", "login.md")).ok, true);
+    const afterClose = await platform.pickTicket("acme", "widgets", "login-form", "billing.md");
+    assert.equal(afterClose.ok, true);
+    assert.equal(afterClose.ok && afterClose.feature.liveTicket, "billing.md");
+  });
+
+  it("keeps a live implement Ticket session on a second Platform on the same home", async () => {
+    const home = newHome();
+    const { platform } = await platformWithProjectAndHarness(home, subscribedTurningHarness());
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    writeHandoff(join(home, "worktrees", "acme", "widgets", "login-form"), ["login.md", "billing.md"]);
+    await reachStage(platform, "login-form", "implement");
+    assert.equal((await platform.pickTicket("acme", "widgets", "login-form", "login.md")).ok, true);
+
+    const second = createPlatform({
+      home,
+      adapters: { ...emptyAdapters(), git: unusedGit("should not clone or add a worktree"), harness: subscribedTurningHarness() },
+    });
+    assert.equal(second.getFeature("acme", "widgets", "login-form")?.liveTicket, "login.md");
+    const refused = await second.pickTicket("acme", "widgets", "login-form", "billing.md");
+    assert.deepEqual(refused, {
+      ok: false,
+      reason: "A Feature allows at most one live implement Ticket session.",
+    });
+  });
+
+  it("keeps spec and Tickets as Feature worktree handoffs, not GitHub issues on the Project", async () => {
+    const harness = subscribedTurningHarness();
+    const { home, platform } = await platformWithProjectAndHarness(newHome(), harness);
+    assert.equal((await platform.createFeature("acme", "widgets", "login-form")).ok, true);
+    const worktree = join(home, "worktrees", "acme", "widgets", "login-form");
+    writeHandoff(worktree, ["01-login.md"], "# login spec\n");
+    await reachStage(platform, "login-form", "to-tickets");
+
+    const sent = await platform.sendTurn("acme", "widgets", "login-form", "/to-tickets");
+    assert.deepEqual(sent, { ok: true });
+    assert.equal(harness.starts[0]?.cwd, worktree);
+    harness.emit({ kind: "turn_ended", stopReason: "end_turn" });
+
+    const feature = platform.getFeature("acme", "widgets", "login-form");
+    assert.equal(existsSync(join(worktree, ".scratch", "spec.md")), true);
+    assert.equal(readFileSync(join(worktree, ".scratch", "spec.md"), "utf8"), "# login spec\n");
+    assert.equal(existsSync(join(worktree, ".scratch", "issues", "01-login.md")), true);
+    assert.deepEqual(feature?.tickets, [{ name: "01-login.md", closedInImplement: false }]);
+    assert.equal(feature?.tickets.some((ticket) => "number" in ticket || "url" in ticket), false);
   });
 });
 

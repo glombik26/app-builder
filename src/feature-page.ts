@@ -66,7 +66,9 @@ export function renderFeaturePage(view: FeaturePageView): string {
   const stageActions =
     actions.length === 0 ? "" : `<div class="stage-actions">${actions.join("")}</div>`;
   const harness =
-    view.ceremony || !view.slot || feature.openStage !== "grill-with-docs"
+    view.ceremony ||
+    !view.slot ||
+    (feature.openStage === "implement" && !feature.liveTicket)
       ? ""
       : renderHarness(featureHref, view.slot);
 
